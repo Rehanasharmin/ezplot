@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ezplot"
+version = "1.3.0"
+description = "Dead-simple, fast plotting for Python. One-liners, PNG/JPEG/SVG, zero required deps."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [{name = "ezplot contributors"}]
+keywords = ["plot", "chart", "visualization", "svg", "png", "simple", "fast"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ezplot/ezplot"
+Documentation = "https://github.com/ezplot/ezplot#readme"
+Repository = "https://github.com/ezplot/ezplot"
+Issues = "https://github.com/ezplot/ezplot/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+images = ["Pillow>=9.0"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ezplot*"]
+exclude = ["tests*", "examples*", "docs*"]
+
+[tool.setuptools.package-data]
+ezplot = ["py.typed"]
