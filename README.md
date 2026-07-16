@@ -82,6 +82,62 @@ ez.quick([1, 2, 3, 5])                   # auto + show
 )
 ```
 
+### Datetime Axis Intelligence
+
+`ezplot` automatically understands Python `datetime.datetime` and `datetime.date` objects. It coerces them to Unix timestamps, computes nice tick intervals automatically based on the axis span (from years down to seconds), and formats and auto-rotates crowded labels dynamically!
+
+```python
+import datetime
+import ezplot as ez
+
+dates = [datetime.datetime(2026, 1, i) for i in range(1, 11)]
+values = [12, 15, 14, 18, 22, 20, 24, 25, 23, 28]
+
+ez.line(dates, values, t="Smart Datetime Axis", save="dates.png")
+```
+
+### Infinite Customizability (Create ANY Chart)
+
+With `ezplot 1.4.0`, you are no longer limited to built-in chart types. You can create **any** chart you can imagine using our primitive drawing API or our post-render `.draw()` callback.
+
+#### Unified Primitive Drawing API
+Both `SVGRenderer` and `RasterRenderer` expose the same clean, fast drawing methods:
+- `to_pixels(x, y)`: Converts data coordinates to screen pixels.
+- `draw_line(x1, y1, x2, y2, color, width=1.5, dashed=False, raw_coords=False)`
+- `draw_rect(x, y, w, h, color, fill=True, stroke_color=None, stroke_width=1.0, radius=0.0, raw_coords=False)`
+- `draw_circle(cx, cy, r, color, fill=True, stroke_color=None, stroke_width=1.0, raw_coords=False)`
+- `draw_text(x, y, text, color, size=11, align="start", raw_coords=False)`
+- `draw_polygon(pts, color, fill=True, stroke_color=None, stroke_width=1.0, raw_coords=False)`
+
+#### 1. Post-Render Overlays (`.draw()`)
+Easily overlay annotations, custom target bands, or extra graphics using a fluent chain:
+```python
+def draw_target_zone(r):
+    # Highlight safe zone in data coordinates
+    r.draw_rect(0, 10, 100, 5, "#22c55e", fill=True)
+
+(
+    ez.line(x, y)
+    .t("Metrics")
+    .draw(draw_target_zone)
+    .save("metrics_zone.png")
+)
+```
+
+#### 2. Custom Series (`kind="custom"`)
+Build fully custom series types (like boxplots, candlestick charts, error bars, step charts) by providing a render function as the `color` attribute:
+```python
+def draw_error_bars(r):
+    # Custom rendering logic using r.draw_line(), r.draw_circle() etc.
+    for px, py in zip(x, y):
+        r.draw_line(px, py - 2, px, py + 2, "red", width=2)
+        r.draw_circle(px, py, 4, "blue")
+
+p = ez.Plot(kind="custom")
+p.add(x, y, color=draw_error_bars)
+p.save("custom_chart.png")
+```
+
 ### Shortcuts
 
 | Short | Means |

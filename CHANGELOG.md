@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0
+
+- Infinite Customizability: unified primitive drawing API on SVGRenderer and RasterRenderer (`draw_line`, `draw_rect`, `draw_circle`, `draw_text`, `draw_polygon`, `to_pixels`).
+- Custom Series (`kind="custom"`) to design completely new chart types.
+- Post-render overlays using the fluent `.draw(fn)` API.
+- Datetime Axis Intelligence: automatic date and datetime coercion to Unix timestamps with smart tick scaling/formatting and label auto-rotation.
+
 ## 1.3.0
 
 - Production customization: `defaults()`, subtitle/footnote, hline/vline, annotate
