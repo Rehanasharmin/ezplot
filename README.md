@@ -17,6 +17,17 @@ ez.bar({"A": 10, "B": 25}, t="Sales", save="sales.jpg")
 
 ---
 
+## New Release Showcase (v1.4.0)
+
+Explore the incredible new power of `ezplot`! We now feature a fully automated and intelligent **Datetime Axis**, along with **Infinite Customizability** via post-render primitive overlays or custom user series rendering.
+
+| Smart Datetime Axis | Infinite Custom Drawing Overlays |
+|:--:|:--:|
+| <img src="docs/showcase_datetime.png" alt="datetime axis" width="360"/> | <img src="docs/showcase_custom.png" alt="custom overlays" width="360"/> |
+| *Auto-scaled dates, auto-formatted & auto-rotated labels* | *Drawn target regions, custom dashed thresholds, text layers* |
+
+---
+
 ## Install
 
 ```bash
