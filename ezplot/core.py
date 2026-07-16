@@ -73,6 +73,7 @@ class Plot:
         self._margin_override: dict | None = None
         self._yticks: list[float] | None = None
         self._xticks: list[float] | None = None
+        self._draw_fn: list[Any] = []
 
         self._series: list[dict[str, Any]] = []
         self._categories: list[str] | None = None
@@ -466,6 +467,14 @@ class Plot:
         self._yticks = [float(t) for t in ticks]
         return self._dirty()
 
+    def draw(self, fn: Any) -> "Plot":
+        """
+        Add a post-render callback to perform custom low-level drawing over the chart area.
+        The callback `fn` receives the renderer (SVGRenderer or RasterRenderer).
+        """
+        self._draw_fn.append(fn)
+        return self._dirty()
+
     def configure(self, **kw: Any) -> "Plot":
         """Alias for style() — set many options at once."""
         return self.style(**kw)
@@ -505,7 +514,17 @@ class Plot:
         k = kind or self.kind
         lab = label or f"series {len(self._series) + 1}"
 
-        if k in ("bar", "pie"):
+        if k == "custom":
+            self._series.append(
+                {
+                    "kind": "custom",
+                    "x": x,
+                    "y": y,
+                    "label": lab,
+                    "color": color,
+                }
+            )
+        elif k in ("bar", "pie"):
             if isinstance(x, dict) and y is None:
                 cats, vals = utils.dict_to_xy(x)
             elif y is None and x is not None:
@@ -934,10 +953,61 @@ class Plot:
         palette = self._palette_colors()
 
         if kind == "pie":
-            return self._render_pie(r, palette)
-        if kind == "bar":
-            return self._render_bar(r, palette)
-        return self._render_xy(r, palette)
+            res = self._render_pie(r, palette)
+        elif kind == "bar":
+            res = self._render_bar(r, palette)
+        elif kind == "custom":
+            res = self._render_custom(r, palette)
+        else:
+            res = self._render_xy(r, palette)
+
+        # Apply draw callbacks after the primary chart is rendered
+        if self._draw_fn:
+            for fn in self._draw_fn:
+                try:
+                    fn(r)
+                except Exception:
+                    pass
+            # update self._svg with the modified renderer output if applicable
+            self._svg = r.finish()
+            return self._svg
+        return res
+
+    def _render_custom(self, r: SVGRenderer, palette: list[str]) -> str:
+        # Determine coordinate ranges from x/y values if available
+        xs_flat: list[float] = []
+        ys_flat: list[float] = []
+        for s in self._series:
+            x_data = s.get("x")
+            y_data = s.get("y")
+            if isinstance(x_data, (list, tuple)):
+                xs_flat.extend([float(v) for v in x_data if isinstance(v, (int, float)) and math.isfinite(float(v))])
+            if isinstance(y_data, (list, tuple)):
+                ys_flat.extend([float(v) for v in y_data if isinstance(v, (int, float)) and math.isfinite(float(v))])
+
+        x0, x1 = self._xlim if self._xlim else utils.data_range(xs_flat, pad=0.05)
+        y0, y1 = self._ylim if self._ylim else utils.data_range(ys_flat, pad=0.08)
+
+        r.axes(x0, x1, y0, y1, grid=self._grid)
+
+        # A custom chart's rendering is entirely driven by draw callbacks
+        # However, we can also support an optional 'draw_fn' as a field on custom series
+        for s in self._series:
+            draw_callback = s.get("color")  # we can borrow or pass callback through custom mechanisms
+            # If a series contains a callable, let's execute it
+            for key in ("color", "x", "y"):
+                val = s.get(key)
+                if callable(val):
+                    try:
+                        val(r)
+                    except Exception:
+                        pass
+
+        r.xlabel(self._xlabel)
+        r.ylabel(self._ylabel)
+        if getattr(self, "_footnote", ""):
+            r.footnote(self._footnote)
+        return r.finish()
 
     def _render_pie(self, r: SVGRenderer, palette: list[str]) -> str:
         s = self._series[0]
@@ -1216,10 +1286,20 @@ class Plot:
                 self._raster_pie(r, palette)
             elif kind == "bar":
                 self._raster_bar(r, palette)
+            elif kind == "custom":
+                self._raster_custom(r, palette)
             else:
                 self._raster_xy(r, palette)
         except Exception as exc:
             r.empty_message(f"Render error: {exc}")
+
+        # Apply draw callbacks after the primary chart is rendered
+        if self._draw_fn:
+            for fn in self._draw_fn:
+                try:
+                    fn(r)
+                except Exception:
+                    pass
 
         r.xlabel(self._xlabel)
         r.ylabel(self._ylabel)
@@ -1227,6 +1307,33 @@ class Plot:
             r.footnote(self._footnote)
         self._raster = r.cv
         return self._raster
+
+    def _raster_custom(self, r, palette: list[str]) -> None:
+        # Determine coordinate ranges from x/y values if available
+        xs_flat: list[float] = []
+        ys_flat: list[float] = []
+        for s in self._series:
+            x_data = s.get("x")
+            y_data = s.get("y")
+            if isinstance(x_data, (list, tuple)):
+                xs_flat.extend([float(v) for v in x_data if isinstance(v, (int, float)) and math.isfinite(float(v))])
+            if isinstance(y_data, (list, tuple)):
+                ys_flat.extend([float(v) for v in y_data if isinstance(v, (int, float)) and math.isfinite(float(v))])
+
+        x0, x1 = self._xlim if self._xlim else utils.data_range(xs_flat, pad=0.05)
+        y0, y1 = self._ylim if self._ylim else utils.data_range(ys_flat, pad=0.08)
+
+        r.axes(x0, x1, y0, y1, grid=self._grid)
+
+        # A custom chart's rendering is entirely driven by draw callbacks
+        for s in self._series:
+            for key in ("color", "x", "y"):
+                val = s.get(key)
+                if callable(val):
+                    try:
+                        val(r)
+                    except Exception:
+                        pass
 
     def _raster_pie(self, r, palette: list[str]) -> None:
         s = self._series[0]

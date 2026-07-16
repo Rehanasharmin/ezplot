@@ -27,6 +27,10 @@ class SVGRenderer:
         self._defs: list[str] = []
         self._clip_id = utils.unique_id("c")
         self._grad_i = 0
+        self.x0 = 0.0
+        self.x1 = 1.0
+        self.y0 = 0.0
+        self.y1 = 1.0
 
     # --- geometry ---------------------------------------------------------
 
@@ -119,6 +123,10 @@ class SVGRenderer:
         categorical_x: bool = False,
         rotate_x: bool = False,
     ) -> None:
+        self.x0 = x0
+        self.x1 = x1
+        self.y0 = y0
+        self.y1 = y1
         t = self.theme
         xt = xticks if xticks is not None else utils.nice_ticks(x0, x1)
         yt = yticks if yticks is not None else utils.nice_ticks(y0, y1)
@@ -162,6 +170,9 @@ class SVGRenderer:
             f'stroke="{t["axis"]}" stroke-width="1.5"/>'
         )
 
+        # Detect if x-axis is datetime-based
+        is_datetime_x = (x0 > 1e8 and x1 > 1e8 and (x1 - x0) < 1e11) # sensible range for Unix timestamps
+
         for y in yt:
             sy = self._sy(y, y0, y1)
             self._parts.append(
@@ -200,17 +211,28 @@ class SVGRenderer:
                         f"{utils.escape_xml(shown)}</text>"
                     )
         else:
+            # For datetime or crowded labels, rotate automatically
+            do_rotate = rotate_x or is_datetime_x or len(xt) > 6
             for x in xt:
                 sx = self._sx(x, x0, x1)
                 self._parts.append(
                     f'<line x1="{sx:.2f}" y1="{bottom}" x2="{sx:.2f}" y2="{bottom + 4}" '
                     f'stroke="{t["axis"]}" stroke-width="1"/>'
                 )
-                self._parts.append(
-                    f'<text x="{sx:.2f}" y="{bottom + 18}" text-anchor="middle" '
-                    f'font-family="{t["font"]}" font-size="11" fill="{t["muted"]}">'
-                    f"{utils.escape_xml(utils.format_number(x))}</text>"
-                )
+                label_text = utils.format_datetime_tick(x, x1 - x0) if is_datetime_x else utils.format_number(x)
+                if do_rotate:
+                    self._parts.append(
+                        f'<text x="{sx:.2f}" y="{bottom + 12}" text-anchor="end" '
+                        f'font-family="{t["font"]}" font-size="10" fill="{t["muted"]}" '
+                        f'transform="rotate(-35 {sx:.2f} {bottom + 12})">'
+                        f"{utils.escape_xml(label_text)}</text>"
+                    )
+                else:
+                    self._parts.append(
+                        f'<text x="{sx:.2f}" y="{bottom + 18}" text-anchor="middle" '
+                        f'font-family="{t["font"]}" font-size="11" fill="{t["muted"]}">'
+                        f"{utils.escape_xml(label_text)}</text>"
+                    )
 
     def legend(self, items: list[tuple[str, str]], kind: str = "line",
                pos: str = "top-right") -> None:
@@ -666,6 +688,75 @@ class SVGRenderer:
                     f'rx="2" fill="{color}" clip-path="url(#{self._clip_id})"/>'
                 )
                 base += val
+
+    def to_pixels(self, x: float, y: float) -> tuple[float, float]:
+        """Convert data coordinates to pixel/pixel-relative coordinates."""
+        return self._sx(x, self.x0, self.x1), self._sy(y, self.y0, self.y1)
+
+    def draw_line(self, x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.5, dashed: bool = False, raw_coords: bool = False) -> None:
+        """Draw a primitive line. By default uses data coordinates unless raw_coords=True."""
+        px1, py1 = (x1, y1) if raw_coords else self.to_pixels(x1, y1)
+        px2, py2 = (x2, y2) if raw_coords else self.to_pixels(x2, y2)
+        dash = ' stroke-dasharray="5,4"' if dashed else ""
+        self._parts.append(
+            f'<line x1="{px1:.2f}" y1="{py1:.2f}" x2="{px2:.2f}" y2="{py2:.2f}" '
+            f'stroke="{color}" stroke-width="{width:.2f}"{dash} '
+            f'clip-path="url(#{self._clip_id})"/>'
+        )
+
+    def draw_rect(self, x: float, y: float, w: float, h: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, radius: float = 0.0, raw_coords: bool = False) -> None:
+        """Draw a primitive rectangle. Coordinates are in data coordinates unless raw_coords=True."""
+        px, py = (x, y) if raw_coords else self.to_pixels(x, y)
+        pw, ph = w, h
+        if not raw_coords:
+            # map width/height using scale
+            px2, py2 = self.to_pixels(x + w, y + h)
+            pw = abs(px2 - px)
+            ph = abs(py2 - py)
+            px = min(px, px2)
+            py = min(py, py2)
+
+        f_attr = f'fill="{color}"' if fill else 'fill="none"'
+        s_attr = f' stroke="{stroke_color}" stroke-width="{stroke_width:.2f}"' if stroke_color else ' stroke="none"'
+        r_attr = f' rx="{radius:.2f}"' if radius > 0 else ""
+        self._parts.append(
+            f'<rect x="{px:.2f}" y="{py:.2f}" width="{pw:.2f}" height="{ph:.2f}"'
+            f'{r_attr} {f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
+        )
+
+    def draw_circle(self, cx: float, cy: float, r: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False) -> None:
+        """Draw a primitive circle. Center is in data coordinates unless raw_coords=True."""
+        pcx, pcy = (cx, cy) if raw_coords else self.to_pixels(cx, cy)
+        f_attr = f'fill="{color}"' if fill else 'fill="none"'
+        s_attr = f' stroke="{stroke_color}" stroke-width="{stroke_width:.2f}"' if stroke_color else ' stroke="none"'
+        self._parts.append(
+            f'<circle cx="{pcx:.2f}" cy="{pcy:.2f}" r="{r:.2f}" '
+            f'{f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
+        )
+
+    def draw_text(self, x: float, y: float, text: str, color: str, size: float = 11, align: str = "start", raw_coords: bool = False) -> None:
+        """Draw primitive text at the given coordinate."""
+        px, py = (x, y) if raw_coords else self.to_pixels(x, y)
+        t = self.theme
+        anchor = "start" if align in ("start", "left") else ("end" if align in ("end", "right") else "middle")
+        self._parts.append(
+            f'<text x="{px:.2f}" y="{py:.2f}" text-anchor="{anchor}" '
+            f'font-family="{t["font"]}" font-size="{size:.1f}" fill="{color}" '
+            f'clip-path="url(#{self._clip_id})">{utils.escape_xml(text)}</text>'
+        )
+
+    def draw_polygon(self, pts: Sequence[tuple[float, float]], color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False) -> None:
+        """Draw primitive polygon. Points are a sequence of (x, y) in data coordinates unless raw_coords=True."""
+        mapped_pts = []
+        for x, y in pts:
+            px, py = (x, y) if raw_coords else self.to_pixels(x, y)
+            mapped_pts.append(f"{px:.2f},{py:.2f}")
+        pts_str = " ".join(mapped_pts)
+        f_attr = f'fill="{color}"' if fill else 'fill="none"'
+        s_attr = f' stroke="{stroke_color}" stroke-width="{stroke_width:.2f}"' if stroke_color else ' stroke="none"'
+        self._parts.append(
+            f'<polygon points="{pts_str}" {f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
+        )
 
     def finish(self) -> str:
         defs = f"<defs>{''.join(self._defs)}</defs>" if self._defs else ""

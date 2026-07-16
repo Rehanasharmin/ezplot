@@ -42,6 +42,8 @@ def as_list(data: Any) -> list:
 def is_number(v: Any) -> bool:
     if isinstance(v, bool):
         return False
+    if hasattr(v, "timetuple"):
+        return True
     if isinstance(v, (int, float)):
         return math.isfinite(float(v))
     if isinstance(v, str):
@@ -62,6 +64,20 @@ def to_float(v: Any) -> float | None:
         return None
     if isinstance(v, bool):
         return float(int(v))
+    # Support datetime and date objects
+    if hasattr(v, "timetuple") and hasattr(v, "timestamp"):
+        try:
+            return float(v.timestamp())
+        except Exception:
+            pass
+    if hasattr(v, "timetuple") and not hasattr(v, "timestamp"):
+        # date object
+        try:
+            import datetime
+            dt = datetime.datetime.combine(v, datetime.time.min)
+            return float(dt.timestamp())
+        except Exception:
+            pass
     if isinstance(v, (int, float)):
         f = float(v)
         return f if math.isfinite(f) else None
@@ -278,6 +294,29 @@ def nice_ticks(lo: float, hi: float, n: int = 5) -> list[float]:
             uniq.append(t)
     return uniq
 
+
+def format_datetime_tick(v: float, span: float) -> str:
+    """Format a Unix timestamp tick into a readable date/time string based on axis span."""
+    try:
+        import datetime
+        dt = datetime.datetime.fromtimestamp(v)
+        # Year span
+        if span > 365 * 24 * 3600:
+            return dt.strftime("%Y-%m-%d")
+        # Month span
+        elif span > 30 * 24 * 3600:
+            return dt.strftime("%b %Y")
+        # Day span
+        elif span > 24 * 3600:
+            return dt.strftime("%b %d")
+        # Hour span
+        elif span > 3600:
+            return dt.strftime("%H:%M")
+        # Minute/Second span
+        else:
+            return dt.strftime("%H:%M:%S")
+    except Exception:
+        return format_number(v)
 
 def format_number(v: float) -> str:
     """Compact human-readable number for tick labels."""

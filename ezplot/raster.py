@@ -535,7 +535,7 @@ class RasterRenderer:
     __slots__ = (
         "width", "height", "theme", "margin", "cv",
         "_bg", "_fg", "_grid", "_axis", "_title_c", "_muted",
-        "_ml", "_mt", "_pw", "_ph",
+        "_ml", "_mt", "_pw", "_ph", "x0", "x1", "y0", "y1",
     )
 
     def __init__(self, width: int = 720, height: int = 420, theme: str | None = None):
@@ -555,6 +555,10 @@ class RasterRenderer:
         self._mt = self.margin["top"]
         self._pw = float(self.width - self.margin["left"] - self.margin["right"])
         self._ph = float(self.height - self.margin["top"] - self.margin["bottom"])
+        self.x0 = 0.0
+        self.x1 = 1.0
+        self.y0 = 0.0
+        self.y1 = 1.0
 
     def _sync_geom(self) -> None:
         self._ml = self.margin["left"]
@@ -622,6 +626,10 @@ class RasterRenderer:
         xlabels: list[str] | None = None,
         categorical_x: bool = False,
     ) -> None:
+        self.x0 = x0
+        self.x1 = x1
+        self.y0 = y0
+        self.y1 = y1
         self._sync_geom()
         xt = xticks if xticks is not None else utils.nice_ticks(x0, x1)
         yt = yticks if yticks is not None else utils.nice_ticks(y0, y1)
@@ -659,10 +667,12 @@ class RasterRenderer:
                 self.cv.vline(int(sx), bottom, bottom + 4, self._axis)
                 self.cv.text(sx, bottom + 8, utils.truncate_label(str(lab), 12), self._muted, scale=1, align="center")
         else:
+            is_datetime_x = (x0 > 1e8 and x1 > 1e8 and (x1 - x0) < 1e11)
             for x in xt:
                 sx = int(self._sx(x, x0, x1) + 0.5)
                 self.cv.vline(sx, bottom, bottom + 4, self._axis)
-                self.cv.text(sx, bottom + 8, utils.format_number(x), self._muted, scale=1, align="center")
+                label_text = utils.format_datetime_tick(x, x1 - x0) if is_datetime_x else utils.format_number(x)
+                self.cv.text(sx, bottom + 8, label_text, self._muted, scale=1, align="center")
 
     def legend(self, items: list[tuple[str, str]], kind: str = "line",
                pos: str = "top-right") -> None:
@@ -928,3 +938,85 @@ class RasterRenderer:
             angle += sweep
         if donut and inner > 0:
             self.cv.dot(cx, cy, inner, self._bg)
+
+    def to_pixels(self, x: float, y: float) -> tuple[float, float]:
+        """Convert data coordinates to pixel/pixel-relative coordinates."""
+        return self._sx(x, self.x0, self.x1), self._sy(y, self.y0, self.y1)
+
+    def draw_line(self, x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.5, dashed: bool = False, raw_coords: bool = False) -> None:
+        """Draw a primitive line. By default uses data coordinates unless raw_coords=True."""
+        px1, py1 = (x1, y1) if raw_coords else self.to_pixels(x1, y1)
+        px2, py2 = (x2, y2) if raw_coords else self.to_pixels(x2, y2)
+        col = parse_color(color)
+        if dashed:
+            # simple dashed drawing
+            dist = math.hypot(px2 - px1, py2 - py1)
+            if dist < 1e-9:
+                return
+            steps = max(1, int(dist / 8))
+            for i in range(steps):
+                t0 = i / steps
+                t1 = (i + 0.5) / steps
+                self.cv.line(px1 + (px2 - px1) * t0, py1 + (py2 - py1) * t0, px1 + (px2 - px1) * t1, py1 + (py2 - py1) * t1, col, width=width)
+        else:
+            self.cv.line(px1, py1, px2, py2, col, width=width)
+
+    def draw_rect(self, x: float, y: float, w: float, h: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, radius: float = 0.0, raw_coords: bool = False) -> None:
+        """Draw a primitive rectangle. Coordinates are in data coordinates unless raw_coords=True."""
+        px, py = (x, y) if raw_coords else self.to_pixels(x, y)
+        pw, ph = w, h
+        if not raw_coords:
+            px2, py2 = self.to_pixels(x + w, y + h)
+            pw = abs(px2 - px)
+            ph = abs(py2 - py)
+            px = min(px, px2)
+            py = min(py, py2)
+
+        col = parse_color(color)
+        if fill:
+            self.cv.rect(px, py, pw, ph, col, radius=radius)
+        if stroke_color:
+            scol = parse_color(stroke_color)
+            # draw 4 edges
+            self.cv.line(px, py, px + pw, py, scol, width=stroke_width)
+            self.cv.line(px + pw, py, px + pw, py + ph, scol, width=stroke_width)
+            self.cv.line(px + pw, py + ph, px, py + ph, scol, width=stroke_width)
+            self.cv.line(px, py + ph, px, py, scol, width=stroke_width)
+
+    def draw_circle(self, cx: float, cy: float, r: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False) -> None:
+        """Draw a primitive circle. Center is in data coordinates unless raw_coords=True."""
+        pcx, pcy = (cx, cy) if raw_coords else self.to_pixels(cx, cy)
+        col = parse_color(color)
+        if fill:
+            self.cv.dot(pcx, pcy, r, col)
+        if stroke_color:
+            # draw a simple stroked circle outline with 24 segments
+            scol = parse_color(stroke_color)
+            pts = []
+            for s in range(25):
+                a = 2 * math.pi * (s / 24)
+                pts.append((pcx + r * math.cos(a), pcy + r * math.sin(a)))
+            self.cv.polyline(pts, scol, width=stroke_width)
+
+    def draw_text(self, x: float, y: float, text: str, color: str, size: float = 11, align: str = "start", raw_coords: bool = False) -> None:
+        """Draw primitive text at the given coordinate."""
+        px, py = (x, y) if raw_coords else self.to_pixels(x, y)
+        col = parse_color(color)
+        # font scale: map size to approximate bitmap font scale (minimum 1)
+        scale = max(1, int(round(size / 11)))
+        self.cv.text(px, py - font.text_height(scale) * 0.5, text, col, scale=scale, align=align)
+
+    def draw_polygon(self, pts: Sequence[tuple[float, float]], color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False) -> None:
+        """Draw primitive polygon. Points are a sequence of (x, y) in data coordinates unless raw_coords=True."""
+        mapped_pts = []
+        for x, y in pts:
+            px, py = (x, y) if raw_coords else self.to_pixels(x, y)
+            mapped_pts.append((px, py))
+        col = parse_color(color)
+        if fill:
+            self.cv.fill_poly(mapped_pts, col)
+        if stroke_color:
+            scol = parse_color(stroke_color)
+            # connect the dots
+            closed_pts = list(mapped_pts) + [mapped_pts[0]] if mapped_pts else []
+            self.cv.polyline(closed_pts, scol, width=stroke_width)

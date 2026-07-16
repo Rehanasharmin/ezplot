@@ -268,6 +268,68 @@ def test_string_numbers():
     assert "<path" in svg or "<circle" in svg
 
 
+def test_datetime_coercion_and_ticks():
+    import datetime
+    dates = [
+        datetime.datetime(2026, 1, 1),
+        datetime.datetime(2026, 1, 2),
+        datetime.datetime(2026, 1, 3),
+    ]
+    vals = [10, 20, 15]
+    svg = ez.line(dates, vals).svg()
+    assert "<svg" in svg
+    assert "Jan 01" in svg or "Jan 02" in svg or "Jan 03" in svg
+
+
+def test_custom_series_and_draw():
+    # Test post-render .draw() callback
+    drawn_called = False
+    def my_draw(r):
+        nonlocal drawn_called
+        drawn_called = True
+        r.draw_circle(2, 15, 10, "red")
+        r.draw_line(1, 10, 3, 20, "blue", dashed=True)
+        r.draw_rect(1, 10, 1, 5, "green", fill=False, stroke_color="black")
+        r.draw_text(2, 15, "Hello World", "black")
+        r.draw_polygon([(1, 10), (2, 20), (3, 10)], "purple")
+
+    p = ez.line([1, 2, 3], [10, 20, 15]).draw(my_draw)
+    svg = p.svg()
+    assert drawn_called
+    assert "<circle" in svg
+    assert "Hello World" in svg
+
+    # Test raw_coords mode in primitive drawing methods
+    raw_draw_called = False
+    def my_raw_draw(r):
+        nonlocal raw_draw_called
+        raw_draw_called = True
+        r.draw_circle(100, 100, 10, "red", raw_coords=True)
+        r.draw_line(50, 50, 150, 150, "blue", dashed=True, raw_coords=True)
+        r.draw_rect(50, 50, 100, 100, "green", fill=False, stroke_color="black", raw_coords=True)
+        r.draw_text(100, 100, "Hello World", "black", raw_coords=True)
+        r.draw_polygon([(50, 50), (150, 50), (100, 150)], "purple", raw_coords=True)
+
+    p_raw = ez.line([1, 2, 3], [10, 20, 15]).draw(my_raw_draw)
+    svg_raw = p_raw.svg()
+    assert raw_draw_called
+    assert "<circle" in svg_raw
+
+
+def test_custom_series_kind():
+    called = False
+    def render_fn(r):
+        nonlocal called
+        called = True
+        r.draw_circle(2, 20, 5, "gold")
+
+    p = ez.Plot(kind="custom")
+    p.add([1, 2, 3], [10, 30, 20], color=render_fn)
+    svg = p.svg()
+    assert called
+    assert "gold" in svg
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
