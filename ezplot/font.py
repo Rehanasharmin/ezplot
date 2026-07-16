@@ -140,6 +140,8 @@ def _ensure_cache() -> None:
 def glyph(ch: str) -> tuple[int, ...]:
     if ch in _GLYPHS:
         return _GLYPHS[ch]
+    if ch.isspace():
+        return _GLYPHS[" "]
     low = ch.lower()
     if low in _GLYPHS:
         return _GLYPHS[low]
@@ -166,11 +168,19 @@ def iter_pixels(text: str, scale: int = 1, tracking: int = 1):
         if scale == 1:
             pix = _PIX1.get(ch)
             if pix is None:
-                pix = _PIX1.get(ch.lower()) or _PIX1.get("?", [])
+                if ch.isspace():
+                    pix = _PIX1.get(" ")
+                else:
+                    pix = _PIX1.get(ch.lower()) or _PIX1.get("?", [])
             for dx, dy in pix:
                 yield x0 + dx, dy
         elif scale == 2 and cache is not None:
-            pix = cache.get(ch) or cache.get(ch.lower()) or cache.get("?", [])
+            pix = cache.get(ch)
+            if pix is None:
+                if ch.isspace():
+                    pix = cache.get(" ")
+                else:
+                    pix = cache.get(ch.lower()) or cache.get("?", [])
             for dx, dy in pix:
                 yield x0 + dx, dy
         else:

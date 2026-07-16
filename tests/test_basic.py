@@ -330,6 +330,19 @@ def test_custom_series_kind():
     assert "gold" in svg
 
 
+def test_whitespace_font_fallback():
+    from ezplot import font
+    # Standard space yields 0 pixels (empty glyph)
+    assert len(list(font.iter_pixels(" "))) == 0
+    # Non-breaking space \u00a0 yields 0 pixels (falls back to space instead of "?")
+    assert len(list(font.iter_pixels("\u00a0"))) == 0
+    # Other whitespaces also yield 0 pixels
+    assert len(list(font.iter_pixels("\t"))) == 0
+    assert len(list(font.iter_pixels("\n"))) == 0
+    # Question mark should have non-zero pixels
+    assert len(list(font.iter_pixels("?"))) > 0
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
