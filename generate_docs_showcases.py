@@ -8,12 +8,12 @@ def generate_showcase_datetime():
 
 def generate_showcase_custom():
     def draw_target_zone(r):
-        # Draw green band from y=180 to y=280
-        r.draw_rect(0, 180, 11, 100, "#10b981", fill=True)
-        # Draw red dashed line at y=230
-        r.draw_line(0, 230, 11, 230, "red", width=1.5, dashed=True)
-        # Draw text "Target Threshold" in red
-        r.draw_text(0.6, 238, "Target Threshold", "red", size=11)
+        # Draw green band within exact axis bounds (r.x0 to r.x1)
+        r.draw_rect(r.x0, 180, r.x1 - r.x0, 100, "#10b981", fill=True)
+        # Draw red dashed line within exact axis bounds (r.x0 to r.x1)
+        r.draw_line(r.x0, 230, r.x1, 230, "red", width=1.5, dashed=True)
+        # Draw text "Target Threshold" in red slightly offset from the left axis
+        r.draw_text(r.x0 + (r.x1 - r.x0) * 0.02, 238, "Target Threshold", "red", size=11)
 
     x = [1, 2, 5, 6, 7, 8, 10]
     y = [150, 210, 210, 300, 360, 240, 320]
