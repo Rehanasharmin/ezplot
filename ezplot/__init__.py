@@ -13,7 +13,7 @@ from .charts import line, bar, scatter, hist, pie, area, plot, auto, quick
 from .style import themes, set_theme, COLORS
 from .config import defaults, reset_defaults, get_defaults
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __all__ = [
     "Plot",
     "line",

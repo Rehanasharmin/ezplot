@@ -84,11 +84,12 @@ ez.quick([1, 2, 3, 5])                   # auto + show
     .subtitle("FY2026")
     .xlabel("Month").ylabel("USD")
     .theme("dark")
-    .hline(100, color="#fbbf24")         # target line
+    .axhspan(80, 120, color="#22c55e", alpha=0.15)  # target zone (background)
+    .hline(100, color="#fbbf24")                    # target line
     .annotate(6, y1[6], "launch")
     .legend_pos("top-left")
     .footnote("Source: finance")
-    .dpi(2)                              # retina PNG
+    .dpi(2)                                         # retina PNG
     .png("out.png")
 )
 ```
@@ -112,26 +113,39 @@ ez.line(dates, values, t="Smart Datetime Axis", save="dates.png")
 With `ezplot 1.4.0`, you are no longer limited to built-in chart types. You can create **any** chart you can imagine using our primitive drawing API or our post-render `.draw()` callback.
 
 #### Unified Primitive Drawing API
-Both `SVGRenderer` and `RasterRenderer` expose the same clean, fast drawing methods:
+Both `SVGRenderer` and `RasterRenderer` expose the same clean, fast drawing methods with full **color-parsing alpha/opacity** support:
 - `to_pixels(x, y)`: Converts data coordinates to screen pixels.
-- `draw_line(x1, y1, x2, y2, color, width=1.5, dashed=False, raw_coords=False)`
-- `draw_rect(x, y, w, h, color, fill=True, stroke_color=None, stroke_width=1.0, radius=0.0, raw_coords=False)`
-- `draw_circle(cx, cy, r, color, fill=True, stroke_color=None, stroke_width=1.0, raw_coords=False)`
-- `draw_text(x, y, text, color, size=11, align="start", raw_coords=False)`
-- `draw_polygon(pts, color, fill=True, stroke_color=None, stroke_width=1.0, raw_coords=False)`
+- `draw_line(x1, y1, x2, y2, color, width=1.5, dashed=False, raw_coords=False, opacity=1.0)`
+- `draw_rect(x, y, w, h, color, fill=True, stroke_color=None, stroke_width=1.0, radius=0.0, raw_coords=False, opacity=1.0)`
+- `draw_circle(cx, cy, r, color, fill=True, stroke_color=None, stroke_width=1.0, raw_coords=False, opacity=1.0)`
+- `draw_text(x, y, text, color, size=11, align="start", raw_coords=False, opacity=1.0)`
+- `draw_polygon(pts, color, fill=True, stroke_color=None, stroke_width=1.0, raw_coords=False, opacity=1.0)`
 
 #### 1. Post-Render Overlays (`.draw()`)
-Easily overlay annotations, custom target bands, or extra graphics using a fluent chain:
+Easily overlay annotations, custom target lines, or extra graphics using a fluent chain:
 ```python
-def draw_target_zone(r):
-    # Highlight safe zone in data coordinates
-    r.draw_rect(0, 10, 100, 5, "#22c55e", fill=True)
+def draw_threshold_markers(r):
+    # Draw custom annotations on the fly
+    r.draw_line(r.x0, 230, r.x1, 230, "red", width=1.5, dashed=True)
+    r.draw_text(r.x0 + (r.x1 - r.x0) * 0.02, 238, "Threshold", "red")
 
 (
     ez.line(x, y)
     .t("Metrics")
-    .draw(draw_target_zone)
-    .save("metrics_zone.png")
+    .draw(draw_threshold_markers)
+    .save("metrics_threshold.png")
+)
+```
+
+#### 2. High-level Background Spans (`.axhspan()` & `.axvspan()`)
+Draw professional target bands or background highlight regions underneath your data series so your plot lines and markers are never obscured:
+```python
+(
+    ez.line(x, y)
+    .t("Metrics Highlight")
+    .axhspan(180, 280, color="#10b981", alpha=0.15)  # Target safe zone
+    .axvspan(1.5, 3.5, color="#3b82f6", alpha=0.10)  # Highlight phase
+    .save("metrics_highlight.png")
 )
 ```
 

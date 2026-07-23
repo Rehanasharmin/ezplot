@@ -80,6 +80,44 @@ def parse_color(
     return out
 
 
+def parse_color_alpha(
+    c: str | Sequence[int] | Sequence[float] | None,
+    default: tuple[int, int, int] = (0, 0, 0),
+    default_alpha: float = 1.0,
+) -> tuple[tuple[int, int, int], float]:
+    if c is None:
+        return default, default_alpha
+    if isinstance(c, (list, tuple)):
+        if len(c) >= 4:
+            return (int(c[0]) & 255, int(c[1]) & 255, int(c[2]) & 255), float(c[3])
+        if len(c) == 3:
+            return (int(c[0]) & 255, int(c[1]) & 255, int(c[2]) & 255), default_alpha
+    s = str(c).strip().lower()
+
+    # Check for #RRGGBBAA or #RGBA
+    if s.startswith("#") and len(s) in (5, 9):
+        h = s[1:]
+        if len(h) == 4:
+            h = h[0] * 2 + h[1] * 2 + h[2] * 2 + h[3] * 2
+        if len(h) == 8:
+            try:
+                rgb = (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+                alpha = int(h[6:8], 16) / 255.0
+                return rgb, alpha
+            except ValueError:
+                pass
+    elif s.startswith("rgba"):
+        try:
+            inside = s[s.index("(") + 1 : s.rindex(")")]
+            parts = inside.split(",")
+            rgb = (int(float(parts[0])), int(float(parts[1])), int(float(parts[2])))
+            alpha = float(parts[3])
+            return rgb, alpha
+        except Exception:
+            pass
+    return parse_color(c, default), default_alpha
+
+
 # ---------------------------------------------------------------------------
 # canvas — bytearray RGB, bulk row ops
 # ---------------------------------------------------------------------------
@@ -458,6 +496,55 @@ class Canvas:
             for dx, dy in font.iter_pixels(text, scale):
                 self.put(x0 + dx, y0 + dy, color, a)
 
+    def text_rotated(
+        self,
+        x: float,
+        y: float,
+        text: str,
+        color: tuple[int, int, int],
+        scale: int = 1,
+        align: str = "center",
+        a: float = 1.0,
+    ) -> None:
+        if not text:
+            return
+        text = (
+            str(text)
+            .replace("…", "...")
+            .replace("—", "-")
+            .replace("–", "-")
+            .replace("×", "x")
+        )
+        scale = 1 if scale < 1 else int(scale)
+        tw = font.text_width(text, scale)
+        th = font.text_height(scale)
+        if align == "center":
+            x0 = x - th * 0.5
+            y0 = y + tw * 0.5
+        elif align in ("end", "right"):
+            x0 = x - th * 0.5
+            y0 = y
+        else:
+            x0 = x - th * 0.5
+            y0 = y + tw
+
+        r, g, b = color
+        buf = self.buf
+        row = self.row
+        w, h = self.w, self.h
+        opaque = a >= 0.999
+        for hx, hy in font.iter_pixels(text, scale):
+            px = int(x0 + hy + 0.5)
+            py = int(y0 - (tw - hx) + 0.5)
+            if 0 <= px < w and 0 <= py < h:
+                if opaque:
+                    i = py * row + px * 3
+                    buf[i] = r
+                    buf[i + 1] = g
+                    buf[i + 2] = b
+                else:
+                    self.put(px, py, color, a)
+
     def to_png_bytes(self) -> bytes:
         return write_png(self.w, self.h, self.buf)
 
@@ -536,12 +623,14 @@ class RasterRenderer:
         "width", "height", "theme", "margin", "cv",
         "_bg", "_fg", "_grid", "_axis", "_title_c", "_muted",
         "_ml", "_mt", "_pw", "_ph", "x0", "x1", "y0", "y1",
+        "font_scale",
     )
 
-    def __init__(self, width: int = 720, height: int = 420, theme: str | None = None):
+    def __init__(self, width: int = 720, height: int = 420, theme: str | None = None, font_scale: float = 1.0):
         self.width = max(120, int(width))
         self.height = max(100, int(height))
         self.theme = get_theme(theme)
+        self.font_scale = font_scale
         self.margin = {"top": 48, "right": 28, "bottom": 56, "left": 64}
         bg = parse_color(self.theme["bg"], (255, 255, 255))
         self.cv = Canvas(self.width, self.height, bg)
@@ -604,12 +693,11 @@ class RasterRenderer:
         if not text:
             return
         self._sync_geom()
-        th = font.text_height(1)
-        total = len(text) * (th + 1)
-        x = 8
-        y = self._mt + self._ph * 0.5 - total * 0.5
-        for i, ch in enumerate(text):
-            self.cv.text(x, y + i * (th + 1), ch, self._muted, scale=1)
+        scale_fac = getattr(self, "font_scale", 1.0)
+        scale = max(1, int(round(scale_fac)))
+        x = 12 * scale_fac
+        y = self._mt + self._ph * 0.5
+        self.cv.text_rotated(x, y, text, self._muted, scale=scale, align="center")
 
     def empty_message(self, msg: str = "No data") -> None:
         self.cv.text(self.width * 0.5, self.height * 0.5, msg, self._muted, scale=2, align="center")
@@ -943,11 +1031,12 @@ class RasterRenderer:
         """Convert data coordinates to pixel/pixel-relative coordinates."""
         return self._sx(x, self.x0, self.x1), self._sy(y, self.y0, self.y1)
 
-    def draw_line(self, x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.5, dashed: bool = False, raw_coords: bool = False) -> None:
+    def draw_line(self, x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.5, dashed: bool = False, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw a primitive line. By default uses data coordinates unless raw_coords=True."""
         px1, py1 = (x1, y1) if raw_coords else self.to_pixels(x1, y1)
         px2, py2 = (x2, y2) if raw_coords else self.to_pixels(x2, y2)
-        col = parse_color(color)
+        col, parsed_a = parse_color_alpha(color)
+        final_a = parsed_a * opacity
         if dashed:
             # simple dashed drawing
             dist = math.hypot(px2 - px1, py2 - py1)
@@ -957,11 +1046,11 @@ class RasterRenderer:
             for i in range(steps):
                 t0 = i / steps
                 t1 = (i + 0.5) / steps
-                self.cv.line(px1 + (px2 - px1) * t0, py1 + (py2 - py1) * t0, px1 + (px2 - px1) * t1, py1 + (py2 - py1) * t1, col, width=width)
+                self.cv.line(px1 + (px2 - px1) * t0, py1 + (py2 - py1) * t0, px1 + (px2 - px1) * t1, py1 + (py2 - py1) * t1, col, width=width, a=final_a)
         else:
-            self.cv.line(px1, py1, px2, py2, col, width=width)
+            self.cv.line(px1, py1, px2, py2, col, width=width, a=final_a)
 
-    def draw_rect(self, x: float, y: float, w: float, h: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, radius: float = 0.0, raw_coords: bool = False) -> None:
+    def draw_rect(self, x: float, y: float, w: float, h: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, radius: float = 0.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw a primitive rectangle. Coordinates are in data coordinates unless raw_coords=True."""
         px, py = (x, y) if raw_coords else self.to_pixels(x, y)
         pw, ph = w, h
@@ -972,51 +1061,76 @@ class RasterRenderer:
             px = min(px, px2)
             py = min(py, py2)
 
-        col = parse_color(color)
+        col, parsed_a = parse_color_alpha(color)
+        final_a = parsed_a * opacity
         if fill:
-            self.cv.rect(px, py, pw, ph, col, radius=radius)
+            self.cv.rect(px, py, pw, ph, col, a=final_a, radius=radius)
         if stroke_color:
-            scol = parse_color(stroke_color)
+            scol, sparsed_a = parse_color_alpha(stroke_color)
+            sfinal_a = sparsed_a * opacity
             # draw 4 edges
-            self.cv.line(px, py, px + pw, py, scol, width=stroke_width)
-            self.cv.line(px + pw, py, px + pw, py + ph, scol, width=stroke_width)
-            self.cv.line(px + pw, py + ph, px, py + ph, scol, width=stroke_width)
-            self.cv.line(px, py + ph, px, py, scol, width=stroke_width)
+            self.cv.line(px, py, px + pw, py, scol, width=stroke_width, a=sfinal_a)
+            self.cv.line(px + pw, py, px + pw, py + ph, scol, width=stroke_width, a=sfinal_a)
+            self.cv.line(px + pw, py + ph, px, py + ph, scol, width=stroke_width, a=sfinal_a)
+            self.cv.line(px, py + ph, px, py, scol, width=stroke_width, a=sfinal_a)
 
-    def draw_circle(self, cx: float, cy: float, r: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False) -> None:
+    def draw_circle(self, cx: float, cy: float, r: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw a primitive circle. Center is in data coordinates unless raw_coords=True."""
         pcx, pcy = (cx, cy) if raw_coords else self.to_pixels(cx, cy)
-        col = parse_color(color)
+        col, parsed_a = parse_color_alpha(color)
+        final_a = parsed_a * opacity
         if fill:
-            self.cv.dot(pcx, pcy, r, col)
+            self.cv.dot(pcx, pcy, r, col, a=final_a)
         if stroke_color:
             # draw a simple stroked circle outline with 24 segments
-            scol = parse_color(stroke_color)
+            scol, sparsed_a = parse_color_alpha(stroke_color)
+            sfinal_a = sparsed_a * opacity
             pts = []
             for s in range(25):
                 a = 2 * math.pi * (s / 24)
                 pts.append((pcx + r * math.cos(a), pcy + r * math.sin(a)))
-            self.cv.polyline(pts, scol, width=stroke_width)
+            for i in range(len(pts) - 1):
+                self.cv.line(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], scol, width=stroke_width, a=sfinal_a)
 
-    def draw_text(self, x: float, y: float, text: str, color: str, size: float = 11, align: str = "start", raw_coords: bool = False) -> None:
+    def draw_text(self, x: float, y: float, text: str, color: str, size: float = 11, align: str = "start", raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw primitive text at the given coordinate."""
         px, py = (x, y) if raw_coords else self.to_pixels(x, y)
-        col = parse_color(color)
+        col, parsed_a = parse_color_alpha(color)
+        final_a = parsed_a * opacity
         # font scale: map size to approximate bitmap font scale (minimum 1)
-        scale = max(1, int(round(size / 11)))
-        self.cv.text(px, py - font.text_height(scale) * 0.5, text, col, scale=scale, align=align)
+        # Multiply size by self.font_scale if RasterRenderer has it, else 1.0
+        scale_fac = getattr(self, "font_scale", 1.0)
+        scale = max(1, int(round(size / 11 * scale_fac)))
+        self.cv.text(px, py - font.text_height(scale) * 0.5, text, col, scale=scale, align=align, a=final_a)
 
-    def draw_polygon(self, pts: Sequence[tuple[float, float]], color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False) -> None:
+    def draw_polygon(self, pts: Sequence[tuple[float, float]], color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw primitive polygon. Points are a sequence of (x, y) in data coordinates unless raw_coords=True."""
         mapped_pts = []
         for x, y in pts:
             px, py = (x, y) if raw_coords else self.to_pixels(x, y)
             mapped_pts.append((px, py))
-        col = parse_color(color)
+        col, parsed_a = parse_color_alpha(color)
+        final_a = parsed_a * opacity
         if fill:
-            self.cv.fill_poly(mapped_pts, col)
+            self.cv.fill_poly(mapped_pts, col, a=final_a)
         if stroke_color:
-            scol = parse_color(stroke_color)
+            scol, sparsed_a = parse_color_alpha(stroke_color)
+            sfinal_a = sparsed_a * opacity
             # connect the dots
             closed_pts = list(mapped_pts) + [mapped_pts[0]] if mapped_pts else []
-            self.cv.polyline(closed_pts, scol, width=stroke_width)
+            for i in range(len(closed_pts) - 1):
+                self.cv.line(closed_pts[i][0], closed_pts[i][1], closed_pts[i + 1][0], closed_pts[i + 1][1], scol, width=stroke_width, a=sfinal_a)
+
+    def hspan(self, ymin: float, ymax: float, y0: float, y1: float, color: str, alpha: float = 0.25) -> None:
+        sy1 = self._sy(ymin, y0, y1)
+        sy2 = self._sy(ymax, y0, y1)
+        y = min(sy1, sy2)
+        h = abs(sy1 - sy2)
+        self.draw_rect(self._ml, y, self._pw, h, color, fill=True, opacity=alpha, raw_coords=True)
+
+    def vspan(self, xmin: float, xmax: float, x0: float, x1: float, color: str, alpha: float = 0.25) -> None:
+        sx1 = self._sx(xmin, x0, x1)
+        sx2 = self._sx(xmax, x0, x1)
+        x = min(sx1, sx2)
+        w = abs(sx1 - sx2)
+        self.draw_rect(x, self._mt, w, self._ph, color, fill=True, opacity=alpha, raw_coords=True)
