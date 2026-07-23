@@ -9,6 +9,28 @@ from . import utils
 from .style import get_theme
 
 
+def svg_color_alpha(color: str | Sequence[int] | Sequence[float] | None, opacity: float = 1.0) -> tuple[str, float]:
+    """Resolve CSS color string and opacity for SVG, preserving CSS named/hex colors."""
+    if color is None:
+        return "none", opacity
+    if not isinstance(color, str):
+        from .raster import parse_color_alpha
+        rgb, parsed_a = parse_color_alpha(color)
+        return f"rgb({rgb[0]},{rgb[1]},{rgb[2]})", parsed_a * opacity
+
+    s = color.strip().lower()
+    if s.startswith("rgba"):
+        from .raster import parse_color_alpha
+        rgb, parsed_a = parse_color_alpha(s)
+        return f"rgb({rgb[0]},{rgb[1]},{rgb[2]})", parsed_a * opacity
+    elif s.startswith("#") and len(s) in (5, 9):
+        from .raster import parse_color_alpha
+        rgb, parsed_a = parse_color_alpha(s)
+        return f"rgb({rgb[0]},{rgb[1]},{rgb[2]})", parsed_a * opacity
+
+    return color, opacity
+
+
 class SVGRenderer:
     """Draw chart series into an SVG string."""
 
@@ -18,11 +40,13 @@ class SVGRenderer:
         height: int = 420,
         theme: str | None = None,
         margin: dict | None = None,
+        font_scale: float = 1.0,
     ):
         self.width = max(120, int(width))
         self.height = max(100, int(height))
         self.theme = get_theme(theme)
         self.margin = dict(margin or {"top": 48, "right": 28, "bottom": 56, "left": 64})
+        self.font_scale = font_scale
         self._parts: list[str] = []
         self._defs: list[str] = []
         self._clip_id = utils.unique_id("c")
@@ -71,9 +95,10 @@ class SVGRenderer:
 
     def empty_message(self, msg: str = "No data") -> None:
         t = self.theme
+        sz = 14 * self.font_scale
         self._parts.append(
             f'<text x="{self.width/2}" y="{self.height/2}" text-anchor="middle" '
-            f'font-family="{t["font"]}" font-size="14" fill="{t["muted"]}">'
+            f'font-family="{t["font"]}" font-size="{sz:.1f}" fill="{t["muted"]}">'
             f"{utils.escape_xml(msg)}</text>"
         )
 
@@ -81,9 +106,10 @@ class SVGRenderer:
         if not text:
             return
         t = self.theme
+        sz = 16 * self.font_scale
         self._parts.append(
             f'<text x="{self.width / 2}" y="28" text-anchor="middle" '
-            f'font-family="{t["font"]}" font-size="16" font-weight="600" '
+            f'font-family="{t["font"]}" font-size="{sz:.1f}" font-weight="600" '
             f'fill="{t["title"]}">{utils.escape_xml(text)}</text>'
         )
 
@@ -92,9 +118,10 @@ class SVGRenderer:
             return
         t = self.theme
         y = self.height - 12
+        sz = 12 * self.font_scale
         self._parts.append(
             f'<text x="{self.margin["left"] + self.plot_w / 2}" y="{y}" '
-            f'text-anchor="middle" font-family="{t["font"]}" font-size="12" '
+            f'text-anchor="middle" font-family="{t["font"]}" font-size="{sz:.1f}" '
             f'fill="{t["muted"]}">{utils.escape_xml(text)}</text>'
         )
 
@@ -104,9 +131,10 @@ class SVGRenderer:
         t = self.theme
         x = 14
         y = self.margin["top"] + self.plot_h / 2
+        sz = 12 * self.font_scale
         self._parts.append(
             f'<text x="{x}" y="{y}" text-anchor="middle" '
-            f'font-family="{t["font"]}" font-size="12" fill="{t["muted"]}" '
+            f'font-family="{t["font"]}" font-size="{sz:.1f}" fill="{t["muted"]}" '
             f'transform="rotate(-90 {x} {y})">{utils.escape_xml(text)}</text>'
         )
 
@@ -148,7 +176,7 @@ class SVGRenderer:
                 self._parts.append(
                     f'<line x1="{self.margin["left"]}" y1="{sy:.2f}" '
                     f'x2="{self.margin["left"] + self.plot_w}" y2="{sy:.2f}" '
-                    f'stroke="{t["grid"]}" stroke-width="1"/>'
+                    f'stroke="{t["grid"]}" stroke-width="1" stroke-dasharray="2,4" stroke-opacity="0.5"/>'
                 )
             if not categorical_x:
                 for x in xt:
@@ -156,7 +184,7 @@ class SVGRenderer:
                     self._parts.append(
                         f'<line x1="{sx:.2f}" y1="{self.margin["top"]}" '
                         f'x2="{sx:.2f}" y2="{self.margin["top"] + self.plot_h}" '
-                        f'stroke="{t["grid"]}" stroke-width="1" stroke-dasharray="2,3"/>'
+                        f'stroke="{t["grid"]}" stroke-width="1" stroke-dasharray="2,4" stroke-opacity="0.5"/>'
                     )
 
         bottom = self.margin["top"] + self.plot_h
@@ -240,8 +268,8 @@ class SVGRenderer:
             return
         t = self.theme
         max_len = max(len(lab) for lab, _ in items)
-        box_w = min(180, 28 + max_len * 7.2)
-        box_h = 8 + len(items) * 18
+        box_w = min(240, (28 + max_len * 7.2) * self.font_scale)
+        box_h = (8 + len(items) * 18) * self.font_scale
         if pos in ("top-left", "tl"):
             bx = self.margin["left"] + 8
             by = self.margin["top"] + 8
@@ -260,27 +288,27 @@ class SVGRenderer:
             f'stroke="{t["grid"]}" stroke-width="1"/>'
         )
         for i, (lab, color) in enumerate(items):
-            iy = by + 14 + i * 18
+            iy = by + (14 + i * 18) * self.font_scale
             if kind == "line":
                 self._parts.append(
-                    f'<line x1="{bx + 8}" y1="{iy}" x2="{bx + 24}" y2="{iy}" '
-                    f'stroke="{color}" stroke-width="2.5" stroke-linecap="round"/>'
+                    f'<line x1="{bx + 8 * self.font_scale}" y1="{iy}" x2="{bx + 24 * self.font_scale}" y2="{iy}" '
+                    f'stroke="{color}" stroke-width="{2.5 * self.font_scale:.1f}" stroke-linecap="round"/>'
                 )
                 self._parts.append(
-                    f'<circle cx="{bx + 16}" cy="{iy}" r="3" fill="{color}"/>'
+                    f'<circle cx="{bx + 16 * self.font_scale}" cy="{iy}" r="{3 * self.font_scale:.1f}" fill="{color}"/>'
                 )
             elif kind == "bar":
                 self._parts.append(
-                    f'<rect x="{bx + 8}" y="{iy - 5}" width="16" height="10" '
+                    f'<rect x="{bx + 8 * self.font_scale}" y="{iy - 5 * self.font_scale}" width="{16 * self.font_scale:.1f}" height="{10 * self.font_scale:.1f}" '
                     f'rx="2" fill="{color}"/>'
                 )
             else:
                 self._parts.append(
-                    f'<circle cx="{bx + 16}" cy="{iy}" r="4" fill="{color}"/>'
+                    f'<circle cx="{bx + 16 * self.font_scale}" cy="{iy}" r="{4 * self.font_scale:.1f}" fill="{color}"/>'
                 )
             self._parts.append(
-                f'<text x="{bx + 30}" y="{iy + 4}" font-family="{t["font"]}" '
-                f'font-size="11" fill="{t["fg"]}">{utils.escape_xml(lab)}</text>'
+                f'<text x="{bx + 30 * self.font_scale}" y="{iy + 4 * self.font_scale}" font-family="{t["font"]}" '
+                f'font-size="{11 * self.font_scale:.1f}" fill="{t["fg"]}">{utils.escape_xml(lab)}</text>'
             )
 
     # --- series -----------------------------------------------------------
@@ -599,9 +627,10 @@ class SVGRenderer:
         if not text:
             return
         t = self.theme
+        sz = 12 * self.font_scale
         self._parts.append(
             f'<text x="{self.width / 2}" y="44" text-anchor="middle" '
-            f'font-family="{t["font"]}" font-size="12" '
+            f'font-family="{t["font"]}" font-size="{sz:.1f}" '
             f'fill="{t["muted"]}">{utils.escape_xml(text)}</text>'
         )
 
@@ -609,9 +638,10 @@ class SVGRenderer:
         if not text:
             return
         t = self.theme
+        sz = 10 * self.font_scale
         self._parts.append(
             f'<text x="{self.margin["left"]}" y="{self.height - 6}" text-anchor="start" '
-            f'font-family="{t["font"]}" font-size="10" '
+            f'font-family="{t["font"]}" font-size="{sz:.1f}" '
             f'fill="{t["muted"]}">{utils.escape_xml(text)}</text>'
         )
 
@@ -642,13 +672,14 @@ class SVGRenderer:
         t = self.theme
         sx, sy = self._sx(x, x0, x1), self._sy(y, y0, y1)
         col = color or t["fg"]
+        sz = 11 * self.font_scale
         self._parts.append(
             f'<circle cx="{sx:.2f}" cy="{sy:.2f}" r="3" fill="{col}" '
             f'clip-path="url(#{self._clip_id})"/>'
         )
         self._parts.append(
             f'<text x="{sx + 6:.2f}" y="{sy - 6:.2f}" text-anchor="{anchor}" '
-            f'font-family="{t["font"]}" font-size="11" fill="{col}" '
+            f'font-family="{t["font"]}" font-size="{sz:.1f}" fill="{col}" '
             f'clip-path="url(#{self._clip_id})">{utils.escape_xml(text)}</text>'
         )
 
@@ -693,18 +724,19 @@ class SVGRenderer:
         """Convert data coordinates to pixel/pixel-relative coordinates."""
         return self._sx(x, self.x0, self.x1), self._sy(y, self.y0, self.y1)
 
-    def draw_line(self, x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.5, dashed: bool = False, raw_coords: bool = False) -> None:
+    def draw_line(self, x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.5, dashed: bool = False, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw a primitive line. By default uses data coordinates unless raw_coords=True."""
         px1, py1 = (x1, y1) if raw_coords else self.to_pixels(x1, y1)
         px2, py2 = (x2, y2) if raw_coords else self.to_pixels(x2, y2)
         dash = ' stroke-dasharray="5,4"' if dashed else ""
+        color_str, final_a = svg_color_alpha(color, opacity)
         self._parts.append(
             f'<line x1="{px1:.2f}" y1="{py1:.2f}" x2="{px2:.2f}" y2="{py2:.2f}" '
-            f'stroke="{color}" stroke-width="{width:.2f}"{dash} '
+            f'stroke="{color_str}" stroke-opacity="{final_a:.3f}" stroke-width="{width:.2f}"{dash} '
             f'clip-path="url(#{self._clip_id})"/>'
         )
 
-    def draw_rect(self, x: float, y: float, w: float, h: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, radius: float = 0.0, raw_coords: bool = False) -> None:
+    def draw_rect(self, x: float, y: float, w: float, h: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, radius: float = 0.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw a primitive rectangle. Coordinates are in data coordinates unless raw_coords=True."""
         px, py = (x, y) if raw_coords else self.to_pixels(x, y)
         pw, ph = w, h
@@ -716,47 +748,82 @@ class SVGRenderer:
             px = min(px, px2)
             py = min(py, py2)
 
-        f_attr = f'fill="{color}"' if fill else 'fill="none"'
-        s_attr = f' stroke="{stroke_color}" stroke-width="{stroke_width:.2f}"' if stroke_color else ' stroke="none"'
+        color_str, final_a = svg_color_alpha(color, opacity)
+        f_attr = f'fill="{color_str}" fill-opacity="{final_a:.3f}"' if fill else 'fill="none"'
+        if stroke_color:
+            sc_str, sc_final_a = svg_color_alpha(stroke_color, opacity)
+            s_attr = f' stroke="{sc_str}" stroke-opacity="{sc_final_a:.3f}" stroke-width="{stroke_width:.2f}"'
+        else:
+            s_attr = ' stroke="none"'
         r_attr = f' rx="{radius:.2f}"' if radius > 0 else ""
         self._parts.append(
             f'<rect x="{px:.2f}" y="{py:.2f}" width="{pw:.2f}" height="{ph:.2f}"'
             f'{r_attr} {f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
         )
 
-    def draw_circle(self, cx: float, cy: float, r: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False) -> None:
+    def draw_circle(self, cx: float, cy: float, r: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw a primitive circle. Center is in data coordinates unless raw_coords=True."""
         pcx, pcy = (cx, cy) if raw_coords else self.to_pixels(cx, cy)
-        f_attr = f'fill="{color}"' if fill else 'fill="none"'
-        s_attr = f' stroke="{stroke_color}" stroke-width="{stroke_width:.2f}"' if stroke_color else ' stroke="none"'
+        color_str, final_a = svg_color_alpha(color, opacity)
+        f_attr = f'fill="{color_str}" fill-opacity="{final_a:.3f}"' if fill else 'fill="none"'
+        if stroke_color:
+            sc_str, sc_final_a = svg_color_alpha(stroke_color, opacity)
+            s_attr = f' stroke="{sc_str}" stroke-opacity="{sc_final_a:.3f}" stroke-width="{stroke_width:.2f}"'
+        else:
+            s_attr = ' stroke="none"'
         self._parts.append(
             f'<circle cx="{pcx:.2f}" cy="{pcy:.2f}" r="{r:.2f}" '
             f'{f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
         )
 
-    def draw_text(self, x: float, y: float, text: str, color: str, size: float = 11, align: str = "start", raw_coords: bool = False) -> None:
+    def draw_text(self, x: float, y: float, text: str, color: str, size: float = 11, align: str = "start", raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw primitive text at the given coordinate."""
         px, py = (x, y) if raw_coords else self.to_pixels(x, y)
         t = self.theme
         anchor = "start" if align in ("start", "left") else ("end" if align in ("end", "right") else "middle")
+        color_str, final_a = svg_color_alpha(color, opacity)
+
+        # scale size with font_scale
+        scale_fac = getattr(self, "font_scale", 1.0)
+        final_size = size * scale_fac
+
         self._parts.append(
             f'<text x="{px:.2f}" y="{py:.2f}" text-anchor="{anchor}" '
-            f'font-family="{t["font"]}" font-size="{size:.1f}" fill="{color}" '
+            f'font-family="{t["font"]}" font-size="{final_size:.1f}" fill="{color_str}" fill-opacity="{final_a:.3f}" '
             f'clip-path="url(#{self._clip_id})">{utils.escape_xml(text)}</text>'
         )
 
-    def draw_polygon(self, pts: Sequence[tuple[float, float]], color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False) -> None:
+    def draw_polygon(self, pts: Sequence[tuple[float, float]], color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw primitive polygon. Points are a sequence of (x, y) in data coordinates unless raw_coords=True."""
         mapped_pts = []
         for x, y in pts:
             px, py = (x, y) if raw_coords else self.to_pixels(x, y)
             mapped_pts.append(f"{px:.2f},{py:.2f}")
         pts_str = " ".join(mapped_pts)
-        f_attr = f'fill="{color}"' if fill else 'fill="none"'
-        s_attr = f' stroke="{stroke_color}" stroke-width="{stroke_width:.2f}"' if stroke_color else ' stroke="none"'
+        color_str, final_a = svg_color_alpha(color, opacity)
+        f_attr = f'fill="{color_str}" fill-opacity="{final_a:.3f}"' if fill else 'fill="none"'
+        if stroke_color:
+            sc_str, sc_final_a = svg_color_alpha(stroke_color, opacity)
+            s_attr = f' stroke="{sc_str}" stroke-opacity="{sc_final_a:.3f}" stroke-width="{stroke_width:.2f}"'
+        else:
+            s_attr = ' stroke="none"'
         self._parts.append(
             f'<polygon points="{pts_str}" {f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
         )
+
+    def hspan(self, ymin: float, ymax: float, y0: float, y1: float, color: str, alpha: float = 0.25) -> None:
+        sy1 = self._sy(ymin, y0, y1)
+        sy2 = self._sy(ymax, y0, y1)
+        y = min(sy1, sy2)
+        h = abs(sy1 - sy2)
+        self.draw_rect(self.margin["left"], y, self.plot_w, h, color, fill=True, opacity=alpha, raw_coords=True)
+
+    def vspan(self, xmin: float, xmax: float, x0: float, x1: float, color: str, alpha: float = 0.25) -> None:
+        sx1 = self._sx(xmin, x0, x1)
+        sx2 = self._sx(xmax, x0, x1)
+        x = min(sx1, sx2)
+        w = abs(sx1 - sx2)
+        self.draw_rect(x, self.margin["top"], w, self.plot_h, color, fill=True, opacity=alpha, raw_coords=True)
 
     def finish(self) -> str:
         defs = f"<defs>{''.join(self._defs)}</defs>" if self._defs else ""

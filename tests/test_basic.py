@@ -343,6 +343,23 @@ def test_whitespace_font_fallback():
     assert len(list(font.iter_pixels("?"))) > 0
 
 
+def test_axhspan_axvspan():
+    # Test high-level axhspan and axvspan rendering in both vector and raster formats
+    p = (
+        ez.line([1, 2, 3], [10, 20, 15])
+        .axhspan(12, 18, color="#22c55e", alpha=0.3)
+        .axvspan(1.5, 2.5, color="#ef4444", alpha=0.15)
+    )
+    svg = p.svg()
+    assert "rect" in svg
+    assert "fill-opacity=\"0.300\"" in svg or "fill-opacity=\"0.3\"" in svg
+    assert "fill-opacity=\"0.150\"" in svg or "fill-opacity=\"0.15\"" in svg
+
+    # Raster path test
+    png = p.png_bytes()
+    assert len(png) > 100
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):

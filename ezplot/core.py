@@ -70,6 +70,8 @@ class Plot:
         self._annotations: list[dict[str, Any]] = []
         self._hlines: list[dict[str, Any]] = []
         self._vlines: list[dict[str, Any]] = []
+        self._hspans: list[dict[str, Any]] = []
+        self._vspans: list[dict[str, Any]] = []
         self._margin_override: dict | None = None
         self._yticks: list[float] | None = None
         self._xticks: list[float] | None = None
@@ -447,6 +449,22 @@ class Plot:
         self._hlines.append({
             "y": float(y), "color": color, "dashed": dashed,
             "label": label, "width": width,
+        })
+        return self._dirty()
+
+    def axhspan(self, ymin: float, ymax: float, *, color: str = "#10b981", alpha: float = 0.25) -> "Plot":
+        """Add a horizontal span (rectangle) across the entire x-axis."""
+        self._hspans.append({
+            "ymin": float(ymin), "ymax": float(ymax),
+            "color": color, "alpha": float(alpha),
+        })
+        return self._dirty()
+
+    def axvspan(self, xmin: float, xmax: float, *, color: str = "#10b981", alpha: float = 0.25) -> "Plot":
+        """Add a vertical span (rectangle) across the entire y-axis."""
+        self._vspans.append({
+            "xmin": float(xmin), "xmax": float(xmax),
+            "color": color, "alpha": float(alpha),
         })
         return self._dirty()
 
@@ -908,7 +926,7 @@ class Plot:
 
     def _render_unsafe(self) -> str:
         theme = self._theme_name
-        r = SVGRenderer(self.width, self.height, theme=theme)
+        r = SVGRenderer(self.width, self.height, theme=theme, font_scale=self._font_scale)
 
         # adaptive margins
         if self._tight:
@@ -1040,6 +1058,11 @@ class Plot:
             y0, y1 = 0.0, float(max(n, 1))
             # draw value axis as x
             r.axes(x0, x1, 0, 1, grid=self._grid, categorical_x=False)
+            # Render background highlight spans
+            for hs in getattr(self, "_hspans", []) or []:
+                r.hspan(hs["ymin"], hs["ymax"], 0, 1, hs["color"], hs["alpha"])
+            for vs in getattr(self, "_vspans", []) or []:
+                r.vspan(vs["xmin"], vs["xmax"], x0, x1, vs["color"], vs["alpha"])
             # hide default y labels by covering with h-bars labels
             colors = (
                 [self._color] * n
@@ -1066,6 +1089,11 @@ class Plot:
             xlabels=cats,
             categorical_x=True,
         )
+        # Render background highlight spans
+        for hs in getattr(self, "_hspans", []) or []:
+            r.hspan(hs["ymin"], hs["ymax"], y0, y1, hs["color"], hs["alpha"])
+        for vs in getattr(self, "_vspans", []) or []:
+            r.vspan(vs["xmin"], vs["xmax"], 0, max(n, 1), vs["color"], vs["alpha"])
 
         n_groups = len(self._series)
         legend_items: list[tuple[str, str]] = []
@@ -1167,6 +1195,12 @@ class Plot:
         else:
             r.axes(x0, x1, y0, y1, grid=self._grid)
 
+        # Render background highlight spans
+        for hs in getattr(self, "_hspans", []) or []:
+            r.hspan(hs["ymin"], hs["ymax"], y0, y1, hs["color"], hs["alpha"])
+        for vs in getattr(self, "_vspans", []) or []:
+            r.vspan(vs["xmin"], vs["xmax"], x0, x1, vs["color"], vs["alpha"])
+
         legend_items: list[tuple[str, str]] = []
         for i, s in enumerate(prepared):
             c = s.get("color")
@@ -1238,7 +1272,7 @@ class Plot:
 
         dpi = max(1, int(getattr(self, "_dpi", 1) or 1))
         rw, rh = self.width * dpi, self.height * dpi
-        r = RasterRenderer(rw, rh, theme=self._theme_name)
+        r = RasterRenderer(rw, rh, theme=self._theme_name, font_scale=self._font_scale)
         # scale margins with dpi
         for k in list(r.margin.keys()):
             r.margin[k] = int(r.margin[k] * dpi)
@@ -1358,6 +1392,15 @@ class Plot:
             else:
                 x0, x1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
             r.axes(x0, x1, 0, 1, grid=self._grid, categorical_x=False)
+
+            # Render background highlight spans
+            for hs in getattr(self, "_hspans", []) or []:
+                if hasattr(r, "hspan"):
+                    r.hspan(hs["ymin"], hs["ymax"], 0, 1, hs["color"], hs["alpha"])
+            for vs in getattr(self, "_vspans", []) or []:
+                if hasattr(r, "vspan"):
+                    r.vspan(vs["xmin"], vs["xmax"], x0, x1, vs["color"], vs["alpha"])
+
             colors = (
                 [self._color] * n
                 if self._color and len(self._series) == 1
@@ -1371,6 +1414,15 @@ class Plot:
         else:
             y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
         r.axes(0, max(n, 1), y0, y1, grid=self._grid, xlabels=cats, categorical_x=True)
+
+        # Render background highlight spans
+        for hs in getattr(self, "_hspans", []) or []:
+            if hasattr(r, "hspan"):
+                r.hspan(hs["ymin"], hs["ymax"], y0, y1, hs["color"], hs["alpha"])
+        for vs in getattr(self, "_vspans", []) or []:
+            if hasattr(r, "vspan"):
+                r.vspan(vs["xmin"], vs["xmax"], 0, max(n, 1), vs["color"], vs["alpha"])
+
         n_groups = len(self._series)
         legend_items: list[tuple[str, str]] = []
         if getattr(self, "_stacked", False) and n_groups > 1 and hasattr(r, "bars_stacked"):
@@ -1447,6 +1499,15 @@ class Plot:
             r.axes(0, max(len(self._categories), 1), y0, y1, grid=self._grid, xlabels=self._categories, categorical_x=True)
         else:
             r.axes(x0, x1, y0, y1, grid=self._grid)
+
+        # Render background highlight spans
+        for hs in getattr(self, "_hspans", []) or []:
+            if hasattr(r, "hspan"):
+                r.hspan(hs["ymin"], hs["ymax"], y0, y1, hs["color"], hs["alpha"])
+        for vs in getattr(self, "_vspans", []) or []:
+            if hasattr(r, "vspan"):
+                r.vspan(vs["xmin"], vs["xmax"], x0, x1, vs["color"], vs["alpha"])
+
         legend_items: list[tuple[str, str]] = []
         for i, s in enumerate(prepared):
             c = s.get("color") or (self._color if i == 0 and self._color else palette[i % len(palette)])
