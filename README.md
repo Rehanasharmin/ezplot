@@ -17,7 +17,7 @@ ez.bar({"A": 10, "B": 25}, t="Sales", save="sales.jpg")
 
 ---
 
-## New Release Showcase (v1.4.0)
+## New Release Showcase (v1.5.0)
 
 Explore the incredible new power of `ezplot`! We now feature a fully automated and intelligent **Datetime Axis**, along with **Infinite Customizability** via post-render primitive overlays or custom user series rendering.
 
