@@ -32,10 +32,10 @@ Explore the incredible new power of `ezplot`! We now feature a fully automated a
 
 ```bash
 # from GitHub
-pip install "git+https://github.com/ezplot/ezplot.git"
+pip install "git+https://github.com/Rehanasharmin/ezplot.git"
 
 # or clone / local
-git clone https://github.com/ezplot/ezplot.git
+git clone https://github.com/Rehanasharmin/ezplot.git
 cd ezplot
 pip install -e .
 
@@ -282,7 +282,7 @@ Typical PNG render: **~5–15 ms** for common charts (pure Python).
 ## Develop / test
 
 ```bash
-git clone https://github.com/ezplot/ezplot.git
+git clone https://github.com/Rehanasharmin/ezplot.git
 cd ezplot
 pip install -e ".[dev,images]"
 python tests/test_basic.py
