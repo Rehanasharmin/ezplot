@@ -110,7 +110,7 @@ ez.line(dates, values, t="Smart Datetime Axis", save="dates.png")
 
 ### Infinite Customizability (Create ANY Chart)
 
-With `ezplot 1.4.0`, you are no longer limited to built-in chart types. You can create **any** chart you can imagine using our primitive drawing API or our post-render `.draw()` callback.
+With `ezplot 1.5.0`, you are no longer limited to built-in chart types. You can create **any** chart you can imagine using our primitive drawing API or our post-render `.draw()` callback.
 
 #### Unified Primitive Drawing API
 Both `SVGRenderer` and `RasterRenderer` expose the same clean, fast drawing methods with full **color-parsing alpha/opacity** support:
