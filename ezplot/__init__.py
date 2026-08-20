@@ -9,11 +9,30 @@ ezplot — dead-simple, fast plotting for Python.
 """
 
 from .core import Plot
-from .charts import line, bar, scatter, hist, pie, area, plot, auto, quick
-from .style import themes, set_theme, COLORS
+from .charts import (
+    line,
+    bar,
+    scatter,
+    hist,
+    pie,
+    area,
+    plot,
+    auto,
+    quick,
+    step,
+    boxplot,
+    box,
+    heatmap,
+    function,
+    fn,
+    barh,
+    donut,
+    chart,
+)
+from .style import themes, set_theme, COLORS, HEATMAPS, get_heatmap
 from .config import defaults, reset_defaults, get_defaults
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 __all__ = [
     "Plot",
     "line",
@@ -25,9 +44,20 @@ __all__ = [
     "plot",
     "auto",
     "quick",
+    "step",
+    "boxplot",
+    "box",
+    "heatmap",
+    "function",
+    "fn",
+    "barh",
+    "donut",
+    "chart",
     "themes",
     "set_theme",
     "COLORS",
+    "HEATMAPS",
+    "get_heatmap",
     "defaults",
     "reset_defaults",
     "get_defaults",

@@ -1,5 +1,51 @@
 # Changelog
 
+## 1.6.0
+
+**New chart types**
+
+- `ez.heatmap(matrix, row_labels=…, col_labels=…, cmap=…)` — colored cell grid with optional value labels, row/column labels and a colorbar. 9 gradient colormaps. `ez.auto` detects 2D numeric matrices automatically.
+- `ez.boxplot(data, labels=…)` — Tukey boxplots (1.5·IQR whiskers, median line, outlier dots) from a list, list-of-lists or dict. Supports `.horizontal()`.
+- `ez.step(x, y)` — step chart (value holds until the next x), also available as `.step()` on line/area plots.
+- `ez.function(fn, start, end)` / `ez.fn(fn, …)` — plot any Python callable over an interval.
+- `ez.barh(...)` — horizontal bars shortcut. `ez.donut(...)` — donut shortcut. `ez.chart(...)` — alias for `ez.auto`.
+
+**Analytics & analysis overlays**
+
+- `.trend()` / `.trendline()` — least-squares linear regression line over line/scatter charts (auto legend entry).
+- `.smooth(window)` — centered moving-average smoothing for line/area series.
+- `.yerr(err)` / `.xerr(err)` — error bars with caps; scalar, per-point list, or per-series nested list.
+- `.xrot(degrees)` / `.rotate_xticks()` — manual x tick label rotation (SVG honors any angle; raster uses vertical labels).
+
+**Real log scales**
+
+- `logy=True` / `.logy()` and `logx=True` / `.logx()` now actually render logarithmic axes with decade ticks (1, 10, 100, …) in both SVG and raster output. Non-positive data safely falls back to a linear axis.
+
+**Smarter syntax (backward compatible)**
+
+- `ez.line(y1, y2, y3)` treats all arguments as parallel series sharing an index; a first argument that looks like an index (0, 1, 2, …) is used as x. Same for `ez.scatter` and `ez.plot`.
+- `ez.bar(cats, s1, s2)` — positional grouped series.
+- `ez.bar({"A": 1, "B": 2}, values=True)` — the `values` label toggle now works as a factory keyword.
+- Datetimes are accepted in `.xlim/.ylim/.xticks/.yticks/.hline/.vline/.annotate/.axhspan/.axvspan`.
+- pandas-like DataFrames are split into named series using their column names.
+- Unknown style keywords emit a `UserWarning` instead of being silently dropped.
+- `.values(fmt)` accepts a format string (e.g. `.values("{:.1f}")`), also for horizontal bars.
+
+**Bug fixes**
+
+- Fixed `.logy()/.logx()` being silently ignored.
+- Fixed stacked bars being drawn with a different y-range than the axes.
+- Fixed horizontal bars showing meaningless 0–1 numeric labels on the category axis; value labels and reference lines now map correctly in horizontal mode.
+- Fixed dashed lines rendering solid in raster (PNG/JPEG/WebP) output.
+- Fixed `ez.line(y1, y2, y3)` silently using the first series as x.
+- Fixed `ez.bar(None, [1, 2, 3])` dropping all data.
+- Fixed `.colors()` being ignored on single-series bar charts.
+- Fixed `.xlim()/.annotate()/.hline()/…` rejecting datetime objects.
+- Fixed area fills connecting across NaN gaps.
+- Fixed annotate label offset for `anchor="end"` and added `size=` control.
+- Fixed heatmap column labels not centering in raster output.
+- Reference-line `width` is now honored in raster output.
+
 ## 1.5.0
 
 - New high-level background highlighting APIs: `.axhspan(ymin, ymax)` and `.axvspan(xmin, xmax)` to easily draw background target regions and shaded bands.

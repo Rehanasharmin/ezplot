@@ -35,8 +35,25 @@ def as_list(data: Any) -> list:
             pass
     try:
         return list(data)
-    except TypeError:
+    except Exception:
         return [data]
+
+
+def is_datetime(v: Any) -> bool:
+    """True for datetime.datetime / datetime.date / pandas Timestamp-like."""
+    if v is None or isinstance(v, bool):
+        return False
+    if hasattr(v, "timetuple") and (hasattr(v, "timestamp") or hasattr(v, "year")):
+        return True
+    return False
+
+
+def has_datetime(items: Any) -> bool:
+    """True if any element of an array-like looks like a date/datetime."""
+    for v in as_list(items):
+        if is_datetime(v):
+            return True
+    return False
 
 
 def is_number(v: Any) -> bool:
@@ -318,6 +335,208 @@ def format_datetime_tick(v: float, span: float) -> str:
     except Exception:
         return format_number(v)
 
+
+def log_ticks(lo: float, hi: float, subs: tuple = (1,)) -> list[float]:
+    """Nice tick values for a log axis: powers of 10 (and optional minor 2/5)."""
+    if not math.isfinite(lo) or not math.isfinite(hi) or lo <= 0 or hi <= 0:
+        return nice_ticks(max(lo, 1e-12), max(hi, 1e-12))
+    if lo > hi:
+        lo, hi = hi, lo
+    ticks: list[float] = []
+    exp = math.floor(math.log10(lo))
+    v = 10.0 ** exp
+    while v <= hi * (1 + 1e-9):
+        for m in subs:
+            t = v * m
+            if lo * (1 - 1e-9) <= t <= hi * (1 + 1e-9):
+                ticks.append(t)
+        v *= 10
+    if len(ticks) < 2:
+        return nice_ticks(lo, hi)
+    return ticks
+
+
+def looks_like_index(data: Any) -> bool:
+    """Heuristic: does this sequence look like an implicit 0..n-1 x-index?
+
+    Used to disambiguate `ez.line(y1, y2, y3)` (all series, shared index)
+    from `ez.line(x, y1, y2)` (first argument is the x-axis).
+    """
+    items = as_list(data)
+    if len(items) < 2:
+        return False
+    vals: list[float] = []
+    for v in items:
+        f = to_float(v)
+        if f is None:
+            return False
+        vals.append(f)
+    n = len(vals)
+    # exact 0..n-1 index
+    if all(abs(vals[i] - i) < 1e-9 for i in range(n)):
+        return True
+    # evenly spaced ascending integer grid starting at 0 (e.g. [0, 2, 4, 6])
+    if vals[0] == 0 and all(v.is_integer() for v in vals):
+        sorted_v = sorted(vals)
+        if sorted_v == vals and all(vals[i] < vals[i + 1] for i in range(n - 1)):
+            if n >= 4:
+                diffs = {vals[i + 1] - vals[i] for i in range(n - 1)}
+                if len(diffs) == 1:
+                    return True
+    return False
+
+
+def linear_regression(
+    xs: Sequence[float], ys: Sequence[float]
+) -> tuple[float, float, float] | None:
+    """Least-squares fit. Returns (slope, intercept, r^2) or None if degenerate."""
+    pts = [
+        (float(x), float(y))
+        for x, y in zip(xs, ys)
+        if isinstance(x, (int, float)) and isinstance(y, (int, float))
+        and math.isfinite(float(x)) and math.isfinite(float(y))
+    ]
+    n = len(pts)
+    if n < 2:
+        return None
+    mx = sum(p[0] for p in pts) / n
+    my = sum(p[1] for p in pts) / n
+    sxx = sum((p[0] - mx) ** 2 for p in pts)
+    sxy = sum((p[0] - mx) * (p[1] - my) for p in pts)
+    syy = sum((p[1] - my) ** 2 for p in pts)
+    if sxx == 0:
+        return None
+    slope = sxy / sxx
+    intercept = my - slope * mx
+    r2 = (sxy * sxy) / (sxx * syy) if syy > 0 else 0.0
+    return slope, intercept, min(1.0, max(0.0, r2))
+
+
+def moving_average(ys: Sequence[float], window: int = 3) -> list[float]:
+    """Centered moving average; NaN stays NaN; ends use available neighbors."""
+    w = max(1, int(window))
+    vals = [to_float(v) for v in as_list(ys)]
+    out: list[float] = []
+    for i in range(len(vals)):
+        if vals[i] is None:
+            out.append(math.nan)
+            continue
+        lo = max(0, i - w // 2)
+        hi = min(len(vals), i + w // 2 + 1)
+        win = [v for v in vals[lo:hi] if v is not None]
+        out.append(sum(win) / len(win) if win else vals[i])
+    return out
+
+
+def box_stats(values: Sequence[float]) -> dict[str, float | list[float]]:
+    """Tukey boxplot stats: q1, median, q3, whiskers (1.5·IQR) and outliers."""
+    v = sorted(
+        f for f in (to_float(x) for x in as_list(values))
+        if f is not None
+    )
+    n = len(v)
+    if n == 0:
+        return {"q1": 0.0, "med": 0.0, "q3": 0.0, "lo": 0.0, "hi": 0.0, "outliers": []}
+
+    q1 = _quantile(v, 0.25)
+    med = _quantile(v, 0.5)
+    q3 = _quantile(v, 0.75)
+    iqr = q3 - q1
+    if iqr <= 0:
+        iqr = max(abs(med) * 0.1, 1e-9)
+    lo_fence = q1 - 1.5 * iqr
+    hi_fence = q3 + 1.5 * iqr
+    body = [x for x in v if lo_fence <= x <= hi_fence]
+    outliers = [x for x in v if x < lo_fence or x > hi_fence]
+    lo = body[0] if body else q1
+    hi = body[-1] if body else q3
+    return {
+        "q1": q1, "med": med, "q3": q3,
+        "lo": lo, "hi": hi,
+        "outliers": outliers,
+    }
+
+
+def _quantile(sorted_vals: list[float], q: float) -> float:
+    n = len(sorted_vals)
+    if n == 1:
+        return sorted_vals[0]
+    pos = q * (n - 1)
+    k = int(math.floor(pos))
+    frac = pos - k
+    if k + 1 >= n:
+        return sorted_vals[-1]
+    return sorted_vals[k] * (1 - frac) + sorted_vals[k + 1] * frac
+
+
+def as_matrix(data: Any) -> list[list[float | None]] | None:
+    """Coerce a 2D array-like (list of lists / numpy 2d) to a float matrix.
+
+    Non-numeric entries become None. Returns None if not matrix-like."""
+    rows = as_list(data)
+    if not rows:
+        return None
+    if not isinstance(rows[0], (list, tuple)) and not (
+        hasattr(rows[0], "tolist") and not isinstance(rows[0], (str, bytes))
+    ):
+        return None
+    mat: list[list[float | None]] = []
+    width = None
+    for row in rows:
+        cells = as_list(row)
+        if width is None:
+            width = len(cells)
+        if len(cells) != width:
+            return None
+        mat.append([to_float(c) for c in cells])
+    return mat or None
+
+
+def looks_matrix(data: Any, min_rows: int = 3, min_cols: int = 3) -> bool:
+    """True if data is a uniform 2D numeric matrix big enough for a heatmap."""
+    if is_list_of_pairs(data):
+        return False
+    rows = as_list(data)
+    if len(rows) < min_rows:
+        return False
+    first = as_list(rows[0]) if rows else []
+    if len(first) < min_cols or isinstance(first, (str, bytes)):
+        return False
+    for r in rows:
+        cells = as_list(r)
+        if isinstance(cells, (str, bytes)) or len(cells) != len(first):
+            return False
+        if not looks_numeric_sequence(cells):
+            return False
+    return True
+
+
+def interp_color(c0: str, c1: str, t: float) -> str:
+    """Linear interpolation between two hex colors → #rrggbb."""
+    def _hx(c: str) -> tuple[int, int, int]:
+        s = c.strip().lstrip("#")
+        if len(s) == 3:
+            s = s[0] * 2 + s[1] * 2 + s[2] * 2
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+
+    a, b = _hx(c0), _hx(c1)
+    t = min(1.0, max(0.0, t))
+    return "#%02x%02x%02x" % (
+        int(round(a[0] + (b[0] - a[0]) * t)),
+        int(round(a[1] + (b[1] - a[1]) * t)),
+        int(round(a[2] + (b[2] - a[2]) * t)),
+    )
+
+
+def dataframe_columns(data: Any) -> list[str] | None:
+    """Column names for a pandas-like DataFrame, else None."""
+    if data is None or not hasattr(data, "columns"):
+        return None
+    try:
+        return [str(c) for c in list(data.columns)]
+    except Exception:
+        return None
+
 def format_number(v: float) -> str:
     """Compact human-readable number for tick labels."""
     if not math.isfinite(v):
@@ -460,6 +679,7 @@ def infer_chart_kind(data: Any, y: Any = None) -> str:
 
         dict                  → bar
         list of pairs         → scatter
+        2D numeric matrix     → heatmap
         categories + numbers  → bar
         two numeric series    → scatter if many unordered-ish else line
         one numeric series    → line
@@ -470,6 +690,8 @@ def infer_chart_kind(data: Any, y: Any = None) -> str:
     if y is None:
         if is_list_of_pairs(data):
             return "scatter"
+        if looks_matrix(data):
+            return "heatmap"
         if looks_numeric_sequence(data):
             return "line"
         # list of strings? useless alone
