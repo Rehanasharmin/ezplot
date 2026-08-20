@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ezplot"
-version = "1.5.0"
+version = "1.6.0"
 description = "Dead-simple, fast plotting for Python. One-liners, PNG/JPEG/SVG, zero required deps."
 readme = "README.md"
 requires-python = ">=3.8"

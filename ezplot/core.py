@@ -76,6 +76,16 @@ class Plot:
         self._yticks: list[float] | None = None
         self._xticks: list[float] | None = None
         self._draw_fn: list[Any] = []
+        self._xrot: float | bool = False      # x tick label rotation (degrees or True)
+        self._step = False                    # step rendering for lines/areas
+        self._trend = False                   # linear trend line overlay
+        self._trend_color: str | None = None
+        self._trend_dashed = True
+        self._trend_label = "trend"
+        self._smooth: int | None = None       # moving-average window
+        self._yerr: Any = None                # scalar or per-point errors
+        self._xerr: Any = None
+        self._values_fmt: str | None = None   # bar value label format
 
         self._series: list[dict[str, Any]] = []
         self._categories: list[str] | None = None
@@ -83,6 +93,7 @@ class Plot:
         self._ylim: tuple[float, float] | None = None
         self._svg: str | None = None
         self._raster = None  # cached Canvas
+        self._x_is_datetime = False
 
         # apply process-wide defaults (non-destructive)
         try:
@@ -196,6 +207,15 @@ class Plot:
             "legend_pos": "legend_pos",
             "bg": "bg",
             "font_scale": "font_scale",
+            "xticks": "xticks",
+            "yticks": "yticks",
+            "xrot": "xrot",
+            "rotate": "xrot",
+            "step": "step",
+            "trend": "trend",
+            "smooth": "smooth",
+            "yerr": "yerr",
+            "xerr": "xerr",
         }
         # size pair
         if "size" in kw and isinstance(kw["size"], (list, tuple)) and len(kw["size"]) == 2:
@@ -278,6 +298,22 @@ class Plot:
                 self.legend_pos(v)
             elif key == "bg":
                 self.bg(v)
+            elif key == "xticks":
+                self.xticks(v)
+            elif key == "yticks":
+                self.yticks(v)
+            elif key == "xrot":
+                self.xrot(v)
+            elif key == "step":
+                self.step(v)
+            elif key == "trend":
+                self.trend(v)
+            elif key == "smooth":
+                self.smooth(v)
+            elif key == "yerr":
+                self.yerr(v)
+            elif key == "xerr":
+                self.xerr(v)
             elif key == "font_scale":
                 try:
                     self._font_scale = max(1, int(v))
@@ -357,9 +393,20 @@ class Plot:
         self._horizontal = bool(on)
         return self._dirty()
 
-    def values(self, on: bool = True) -> "Plot":
-        """Show numeric labels on bars."""
-        self._show_values = bool(on)
+    def values(self, on: bool | str = True, *, fmt: str | None = None) -> "Plot":
+        """
+        Show numeric labels on bars.
+
+            .values()               # auto-formatted (1.5k, 42, …)
+            .values(fmt="{:.1f}")   # custom format string
+        """
+        if isinstance(on, str):
+            self._values_fmt = on
+            self._show_values = True
+        else:
+            self._show_values = bool(on)
+        if fmt is not None:
+            self._values_fmt = fmt
         return self._dirty()
 
     def sort(self, on: bool = True) -> "Plot":
@@ -398,6 +445,62 @@ class Plot:
         self._tight = bool(on)
         return self._dirty()
 
+    def xrot(self, degrees: float | bool = 35) -> "Plot":
+        """Rotate x tick labels by `degrees` (True = 35°)."""
+        if degrees is True:
+            self._xrot = 35.0
+        elif degrees in (None, False):
+            self._xrot = False
+        else:
+            try:
+                self._xrot = float(degrees)
+            except (TypeError, ValueError):
+                self._xrot = False
+        return self._dirty()
+
+    def rotate_xticks(self, degrees: float | bool = 35) -> "Plot":
+        """Alias for .xrot()."""
+        return self.xrot(degrees)
+
+    def step(self, on: bool = True) -> "Plot":
+        """Render line/area as a step chart (value holds until the next x)."""
+        self._step = bool(on)
+        return self._dirty()
+
+    def trend(self, on: bool = True, *, color: str | None = None,
+              dashed: bool = True, label: str = "trend") -> "Plot":
+        """Overlay a least-squares linear trend line on line/scatter charts."""
+        self._trend = bool(on)
+        self._trend_color = color
+        self._trend_dashed = bool(dashed)
+        self._trend_label = str(label)
+        return self._dirty()
+
+    def trendline(self, *args: Any, **kw: Any) -> "Plot":
+        """Alias for .trend()."""
+        return self.trend(*args, **kw)
+
+    def smooth(self, window: int | None = 3) -> "Plot":
+        """Smooth line/area series with a centered moving average."""
+        if window is None or window is False:
+            self._smooth = None
+        else:
+            try:
+                self._smooth = max(1, int(window))
+            except (TypeError, ValueError):
+                self._smooth = None
+        return self._dirty()
+
+    def yerr(self, err: Any) -> "Plot":
+        """Draw vertical error bars: scalar for all points, or a sequence."""
+        self._yerr = err
+        return self._dirty()
+
+    def xerr(self, err: Any) -> "Plot":
+        """Draw horizontal error bars: scalar for all points, or a sequence."""
+        self._xerr = err
+        return self._dirty()
+
     def dpi(self, scale: int = 2) -> "Plot":
         """Raster scale factor (2 ≈ retina PNG/JPEG)."""
         try:
@@ -434,55 +537,80 @@ class Plot:
         self._margin_override = m
         return self._dirty()
 
-    def annotate(self, x: float, y: float, text: str, *,
-                 color: str | None = None, anchor: str = "start") -> "Plot":
-        """Add a text label at data coordinates."""
+    def annotate(self, x: Any, y: Any, text: str, *,
+                 color: str | None = None, anchor: str = "start",
+                 size: float = 11) -> "Plot":
+        """Add a text label at data coordinates (datetimes allowed)."""
+        fx = utils.to_float(x)
+        fy = utils.to_float(y)
+        if fx is None or fy is None:
+            return self._dirty()
         self._annotations.append({
-            "x": float(x), "y": float(y), "text": str(text),
-            "color": color, "anchor": anchor,
+            "x": fx, "y": fy, "text": str(text),
+            "color": color, "anchor": anchor, "size": size,
         })
         return self._dirty()
 
-    def hline(self, y: float, *, color: str = "#94a3b8",
+    def hline(self, y: Any, *, color: str = "#94a3b8",
               dashed: bool = True, label: str = "", width: float = 1.5) -> "Plot":
-        """Horizontal reference line at y."""
+        """Horizontal reference line at y (datetimes allowed)."""
+        fy = utils.to_float(y)
+        if fy is None:
+            return self._dirty()
         self._hlines.append({
-            "y": float(y), "color": color, "dashed": dashed,
+            "y": fy, "color": color, "dashed": dashed,
             "label": label, "width": width,
         })
         return self._dirty()
 
-    def axhspan(self, ymin: float, ymax: float, *, color: str = "#10b981", alpha: float = 0.25) -> "Plot":
+    def axhspan(self, ymin: Any, ymax: Any, *, color: str = "#10b981", alpha: float = 0.25) -> "Plot":
         """Add a horizontal span (rectangle) across the entire x-axis."""
+        a, b = utils.to_float(ymin), utils.to_float(ymax)
+        if a is None or b is None:
+            return self._dirty()
         self._hspans.append({
-            "ymin": float(ymin), "ymax": float(ymax),
+            "ymin": min(a, b), "ymax": max(a, b),
             "color": color, "alpha": float(alpha),
         })
         return self._dirty()
 
-    def axvspan(self, xmin: float, xmax: float, *, color: str = "#10b981", alpha: float = 0.25) -> "Plot":
+    def axvspan(self, xmin: Any, xmax: Any, *, color: str = "#10b981", alpha: float = 0.25) -> "Plot":
         """Add a vertical span (rectangle) across the entire y-axis."""
+        a, b = utils.to_float(xmin), utils.to_float(xmax)
+        if a is None or b is None:
+            return self._dirty()
         self._vspans.append({
-            "xmin": float(xmin), "xmax": float(xmax),
+            "xmin": min(a, b), "xmax": max(a, b),
             "color": color, "alpha": float(alpha),
         })
         return self._dirty()
 
-    def vline(self, x: float, *, color: str = "#94a3b8",
+    def vline(self, x: Any, *, color: str = "#94a3b8",
               dashed: bool = True, label: str = "", width: float = 1.5) -> "Plot":
-        """Vertical reference line at x."""
+        """Vertical reference line at x (datetimes allowed)."""
+        fx = utils.to_float(x)
+        if fx is None:
+            return self._dirty()
         self._vlines.append({
-            "x": float(x), "color": color, "dashed": dashed,
+            "x": fx, "color": color, "dashed": dashed,
             "label": label, "width": width,
         })
         return self._dirty()
 
-    def xticks(self, ticks: Sequence[float]) -> "Plot":
-        self._xticks = [float(t) for t in ticks]
+    def xticks(self, ticks: Sequence[Any] | None) -> "Plot":
+        if ticks is None:
+            self._xticks = None
+        else:
+            vals = [utils.to_float(t) for t in ticks]
+            self._xticks = [v for v in vals if v is not None]
         return self._dirty()
 
-    def yticks(self, ticks: Sequence[float]) -> "Plot":
-        self._yticks = [float(t) for t in ticks]
+    def yticks(self, ticks: Sequence[Any] | None) -> "Plot":
+        if ticks is None:
+            self._yticks = None
+        else:
+            vals = [utils.to_float(t) for t in ticks]
+            self._yticks = [v for v in vals if v is not None]
         return self._dirty()
 
     def draw(self, fn: Any) -> "Plot":
@@ -497,19 +625,21 @@ class Plot:
         """Alias for style() — set many options at once."""
         return self.style(**kw)
 
-    def xlim(self, lo: float, hi: float) -> "Plot":
+    def xlim(self, lo: Any, hi: Any) -> "Plot":
+        """Set x-axis limits (numbers or datetimes)."""
         try:
-            a, b = float(lo), float(hi)
-            if math.isfinite(a) and math.isfinite(b):
+            a, b = utils.to_float(lo), utils.to_float(hi)
+            if a is not None and b is not None and math.isfinite(a) and math.isfinite(b):
                 self._xlim = (min(a, b), max(a, b))
         except (TypeError, ValueError):
             pass
         return self._dirty()
 
-    def ylim(self, lo: float, hi: float) -> "Plot":
+    def ylim(self, lo: Any, hi: Any) -> "Plot":
+        """Set y-axis limits (numbers or datetimes)."""
         try:
-            a, b = float(lo), float(hi)
-            if math.isfinite(a) and math.isfinite(b):
+            a, b = utils.to_float(lo), utils.to_float(hi)
+            if a is not None and b is not None and math.isfinite(a) and math.isfinite(b):
                 self._ylim = (min(a, b), max(a, b))
         except (TypeError, ValueError):
             pass
@@ -542,6 +672,13 @@ class Plot:
                     "color": color,
                 }
             )
+        elif k == "box":
+            if y is None and x is not None:
+                self._set_box(x, labels=[lab] if label else None)
+            elif y is not None:
+                self._set_box(y, labels=[lab] if label else None)
+        elif k == "heat":
+            self._set_heat(x if x is not None else y)
         elif k in ("bar", "pie"):
             if isinstance(x, dict) and y is None:
                 cats, vals = utils.dict_to_xy(x)
@@ -614,8 +751,39 @@ class Plot:
         x: Any,
         y: Any,
         labels: Sequence[str] | None = None,
+        force_multi: bool = False,
     ) -> "Plot":
-        """Used by line/scatter/area factories. Supports multi-y + pairs + dicts."""
+        """Used by line/scatter/area factories. Supports multi-y + pairs + dicts.
+
+        `force_multi` disambiguates a list-of-lists as parallel y series."""
+        self._x_is_datetime = False
+
+        # pandas-like DataFrame as y → named series using column names
+        df_cols = utils.dataframe_columns(y)
+        if df_cols is not None and y is not None and not isinstance(y, (dict, list, tuple)):
+            series_list = [utils.as_float_list_keep_nan(utils.as_list(y[c])) for c in df_cols]
+            labs = list(labels) if labels else df_cols
+            max_n = max((len(s) for s in series_list), default=0)
+            if x is None:
+                xs = [float(i) for i in range(max_n)]
+            else:
+                xs = utils.as_float_list_keep_nan(x)
+                self._x_is_datetime = utils.has_datetime(x)
+            self._series = []
+            for i, ys in enumerate(series_list):
+                n = min(len(xs), len(ys)) if xs else len(ys)
+                xx = xs[:n] if xs else [float(j) for j in range(n)]
+                self._series.append(
+                    {
+                        "kind": self.kind,
+                        "x": xx,
+                        "y": ys[:n],
+                        "label": labs[i] if i < len(labs) else f"y{i+1}",
+                        "color": None,
+                    }
+                )
+            return self
+
         # dict of series: {"A": [..], "B": [..]} with shared x or index
         if isinstance(y, dict):
             keys = list(y.keys())
@@ -626,6 +794,7 @@ class Plot:
                 xs = [float(i) for i in range(max_n)]
             else:
                 xs = utils.as_float_list_keep_nan(x)
+                self._x_is_datetime = utils.has_datetime(x)
             self._series = []
             for i, ys in enumerate(series_list):
                 n = min(len(xs), len(ys)) if xs else len(ys)
@@ -644,6 +813,28 @@ class Plot:
         if isinstance(x, dict) and y is None:
             # treat as named series of y values (index x)
             return self._set_xy(None, x, labels=labels)
+
+        # pandas-like DataFrame as x (y None) → named series per column
+        if y is None:
+            df_cols = utils.dataframe_columns(x)
+            if df_cols is not None and not isinstance(x, (dict, list, tuple)):
+                series_list = [utils.as_float_list_keep_nan(utils.as_list(x[c])) for c in df_cols]
+                labs = list(labels) if labels else df_cols
+                max_n = max((len(s) for s in series_list), default=0)
+                xs = [float(i) for i in range(max_n)]
+                self._series = []
+                for i, ys in enumerate(series_list):
+                    n = min(len(xs), len(ys))
+                    self._series.append(
+                        {
+                            "kind": self.kind,
+                            "x": xs[:n],
+                            "y": ys[:n],
+                            "label": labs[i] if i < len(labs) else f"y{i+1}",
+                            "color": None,
+                        }
+                    )
+                return self
 
         # list of pairs
         if y is None and utils.is_list_of_pairs(x):
@@ -674,7 +865,12 @@ class Plot:
             return self
 
         y_raw = utils.as_list(y)
-        multi = utils.is_list_of_lists(y) and not utils.is_list_of_pairs(y)
+        multi = force_multi or (
+            utils.is_list_of_lists(y) and not utils.is_list_of_pairs(y)
+        )
+        # when x is given explicitly, a nested y means parallel series
+        if x is not None and utils.is_list_of_lists(y):
+            multi = True
         # also: numpy 2d
         if hasattr(y, "ndim") and getattr(y, "ndim", 1) >= 2:
             multi = True
@@ -690,6 +886,7 @@ class Plot:
             xs_full = [float(i) for i in range(max_n)]
         elif utils.looks_numeric_sequence(x):
             xs_full = utils.as_float_list_keep_nan(x)
+            self._x_is_datetime = utils.has_datetime(x)
         else:
             # categorical x — map to indices, remember labels for ticks later
             cats = utils.as_str_list(x)
@@ -796,7 +993,16 @@ class Plot:
             ]
             return self
 
-        cats = utils.as_str_list(categories)
+        cats = utils.as_str_list(categories) if categories is not None else []
+        if not cats:
+            # no category labels given → synthesize an index so values survive
+            if isinstance(values, dict):
+                n = max((len(utils.as_list(v)) for v in values.values()), default=0)
+            elif utils.is_list_of_lists(values):
+                n = max((len(utils.as_list(s)) for s in utils.as_list(values)), default=0)
+            else:
+                n = len(utils.as_list(values))
+            cats = [str(i) for i in range(max(n, 1))]
         self._categories = cats
         n = len(cats)
 
@@ -894,6 +1100,70 @@ class Plot:
         ]
         return self
 
+    def _set_box(
+        self,
+        data: Any,
+        labels: Sequence[str] | None = None,
+    ) -> "Plot":
+        """Box plot data: one list → one box; list of lists / dict → many."""
+        self.kind = "box"
+        if isinstance(data, dict):
+            labs = list(str(k) for k in data.keys())
+            boxes = [utils.as_float_list(v) for v in data.values()]
+        else:
+            items = utils.as_list(data)
+            if items and isinstance(items[0], (list, tuple)):
+                boxes = [utils.as_float_list(v) for v in items]
+            else:
+                boxes = [utils.as_float_list(items)]
+            labs = (
+                [str(l) for l in labels]
+                if labels is not None
+                else [f"{i + 1}" for i in range(len(boxes))]
+            )
+        while len(labs) < len(boxes):
+            labs.append(f"{len(labs) + 1}")
+        self._series = [
+            {
+                "kind": "box",
+                "boxes": boxes,
+                "labels": labs[: len(boxes)],
+                "label": "box",
+                "color": self._color,
+            }
+        ]
+        return self
+
+    def _set_heat(
+        self,
+        matrix: Any,
+        *,
+        row_labels: Sequence[str] | None = None,
+        col_labels: Sequence[str] | None = None,
+        cmap: str = "blues",
+        show_values: bool = True,
+        colorbar: bool = True,
+    ) -> "Plot":
+        """Heatmap data from a 2D matrix (list of lists / numpy)."""
+        self.kind = "heat"
+        mat = utils.as_matrix(matrix)
+        if mat is None:
+            mat = []
+        self._series = [
+            {
+                "kind": "heat",
+                "matrix": mat,
+                "row_labels": [str(l) for l in row_labels] if row_labels is not None else None,
+                "col_labels": [str(l) for l in col_labels] if col_labels is not None else None,
+                "cmap": cmap,
+                "show_values": bool(show_values),
+                "colorbar": bool(colorbar),
+                "label": "heat",
+                "color": self._color,
+            }
+        ]
+        return self
+
     # ------------------------------------------------------------------ #
     # render
     # ------------------------------------------------------------------ #
@@ -976,6 +1246,10 @@ class Plot:
             res = self._render_bar(r, palette)
         elif kind == "custom":
             res = self._render_custom(r, palette)
+        elif kind == "box":
+            res = self._render_box(r, palette)
+        elif kind == "heat":
+            res = self._render_heat(r, palette)
         else:
             res = self._render_xy(r, palette)
 
@@ -1040,43 +1314,196 @@ class Plot:
             r.footnote(self._footnote)
         return r.finish()
 
-    def _render_bar(self, r: SVGRenderer, palette: list[str]) -> str:
-        cats = list(self._series[0].get("categories") or [])
-        n = len(cats)
+    def _render_box(self, r: SVGRenderer, palette: list[str]) -> str:
+        s = self._series[0]
+        boxes = s.get("boxes") or []
+        labels = s.get("labels") or []
+        stats = [utils.box_stats(b) for b in boxes]
         all_vals: list[float] = []
-        for s in self._series:
-            for v in s.get("values") or []:
+        for b in boxes:
+            for v in b:
                 if isinstance(v, (int, float)) and math.isfinite(float(v)):
                     all_vals.append(float(v))
-
+        if self._ylim:
+            y0, y1 = self._ylim
+        else:
+            y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
+        n = max(len(boxes), 1)
+        colors = [
+            palette[i % len(palette)] for i in range(len(boxes) or 1)
+        ]
         if self._horizontal:
-            # value on x
             if self._xlim:
                 x0, x1 = self._xlim
             else:
                 x0, x1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
-            y0, y1 = 0.0, float(max(n, 1))
-            # draw value axis as x
-            r.axes(x0, x1, 0, 1, grid=self._grid, categorical_x=False)
-            # Render background highlight spans
-            for hs in getattr(self, "_hspans", []) or []:
-                r.hspan(hs["ymin"], hs["ymax"], 0, 1, hs["color"], hs["alpha"])
-            for vs in getattr(self, "_vspans", []) or []:
-                r.vspan(vs["xmin"], vs["xmax"], x0, x1, vs["color"], vs["alpha"])
-            # hide default y labels by covering with h-bars labels
-            colors = (
-                [self._color] * n
-                if self._color and len(self._series) == 1
-                else [palette[i % len(palette)] for i in range(n)]
-            )
-            vals = self._series[0]["values"]
-            r.bars_h(n, vals, x0, x1, colors, cats)
+            r.axes(x0, x1, 0, n, grid=self._grid, categorical_x=False, yticks=[])
+            r.boxplot(stats, x0, x1, colors, labels=labels, horizontal=True)
+        else:
+            r.axes(0, n, y0, y1, grid=self._grid, xlabels=labels, categorical_x=True,
+                   rotate_x=self._xrot)
+            r.boxplot(stats, y0, y1, colors)
+        r.xlabel(self._xlabel)
+        r.ylabel(self._ylabel)
+        if getattr(self, "_footnote", ""):
+            r.footnote(self._footnote)
+        return r.finish()
+
+    def _render_heat(self, r: SVGRenderer, palette: list[str]) -> str:
+        s = self._series[0]
+        matrix = s.get("matrix") or []
+        rows = len(matrix)
+        if rows == 0:
+            r.empty_message("No data")
             r.xlabel(self._xlabel)
             r.ylabel(self._ylabel)
             return r.finish()
+        cols = max(len(row) for row in matrix)
+        row_labels = s.get("row_labels")
+        col_labels = s.get("col_labels")
+        show_values = bool(s.get("show_values", True))
+        colorbar = bool(s.get("colorbar", True))
+        cmap = s.get("cmap") or "blues"
+        from .style import get_heatmap
+        c0, c1 = get_heatmap(cmap)
 
+        # reserve space for colorbar + labels
+        if colorbar:
+            r.margin["right"] = max(r.margin["right"], 62)
+        if row_labels:
+            max_len = max(len(l) for l in row_labels)
+            r.margin["left"] = max(r.margin["left"], 16 + max_len * 7)
+        if col_labels:
+            r.margin["bottom"] = max(r.margin["bottom"], 64)
+
+        finite = [
+            v for row in matrix for v in row
+            if v is not None and math.isfinite(float(v))
+        ]
+        vmin = min(finite) if finite else 0.0
+        vmax = max(finite) if finite else 1.0
+        if vmax == vmin:
+            vmax = vmin + 1.0
+        cell_colors: list[list[str]] = []
+        for row in matrix:
+            cell_colors.append([
+                utils.interp_color(c0, c1, (float(v) - vmin) / (vmax - vmin))
+                if v is not None else r.theme["grid"]
+                for v in row
+            ])
+        r.heatmap(matrix, cell_colors, r.theme["grid"],
+                  show_values=show_values, value_fmt=self._values_fmt)
+        if colorbar:
+            r.heat_colorbar(c0, c1, vmin, vmax)
+        # row / column labels
+        left, top = r.margin["left"], r.margin["top"]
+        cell_h = r.plot_h / rows
+        cell_w = r.plot_w / cols
+        for i, lab in enumerate(row_labels or []):
+            r.draw_text(left - 8, top + (i + 0.5) * cell_h - 4, utils.truncate_label(lab, 12),
+                        r.theme["muted"], align="end", raw_coords=True)
+        for j, lab in enumerate(col_labels or []):
+            r.draw_text(left + (j + 0.5) * cell_w, top + r.plot_h + 14,
+                        utils.truncate_label(lab, 10), r.theme["muted"], align="middle", raw_coords=True)
+        r.xlabel(self._xlabel)
+        r.ylabel(self._ylabel)
+        if getattr(self, "_footnote", ""):
+            r.footnote(self._footnote)
+        return r.finish()
+
+    def _render_bar(self, r: SVGRenderer, palette: list[str]) -> str:
+        series = list(self._series)
+        cats = list(series[0].get("categories") or [])
+        n = len(cats)
+
+        # .sort() → order categories by value (desc), single series or total
+        if self._sort_x and n > 1 and series:
+            if len(series) == 1:
+                vals0 = series[0].get("values") or []
+                order = sorted(
+                    range(n),
+                    key=lambda i: float(vals0[i]) if i < len(vals0)
+                    and isinstance(vals0[i], (int, float)) and math.isfinite(float(vals0[i])) else float("-inf"),
+                    reverse=True,
+                )
+            else:
+                def _total(i: int) -> float:
+                    tot = 0.0
+                    for s in series:
+                        vals = s.get("values") or []
+                        if i < len(vals) and isinstance(vals[i], (int, float)) and math.isfinite(float(vals[i])):
+                            tot += float(vals[i])
+                    return tot
+
+                order = sorted(range(n), key=_total, reverse=True)
+            cats = [cats[i] for i in order]
+            for s in series:
+                vals = s.get("values") or []
+                s["values"] = [vals[i] if i < len(vals) else 0.0 for i in order]
+            series[0]["categories"] = cats
+
+        all_vals: list[float] = []
+        for s in series:
+            for v in s.get("values") or []:
+                if isinstance(v, (int, float)) and math.isfinite(float(v)):
+                    all_vals.append(float(v))
+
+        n_groups = len(series)
+        stacked = bool(getattr(self, "_stacked", False)) and n_groups > 1
+
+        if self._horizontal:
+            # value mapped on x; category axis has no numeric labels
+            if self._xlim:
+                x0, x1 = self._xlim
+            else:
+                x0, x1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
+            r.axes(x0, x1, 0, max(n, 1), grid=self._grid, categorical_x=False, yticks=[])
+            # spans swap meaning for horizontal bars: value band is vertical,
+            # category band is horizontal
+            for hs in getattr(self, "_hspans", []) or []:
+                r.vspan(hs["ymin"], hs["ymax"], x0, x1, hs["color"], hs["alpha"])
+            for vs in getattr(self, "_vspans", []) or []:
+                r.hspan(vs["xmin"], vs["xmax"], 0, max(n, 1), vs["color"], vs["alpha"])
+            s0 = series[0]
+            single = s0.get("color") or self._color
+            colors = (
+                [single] * n
+                if single and n_groups == 1
+                else [palette[i % len(palette)] for i in range(max(n, 1))]
+            )
+            r.bars_h(
+                max(n, 1),
+                s0.get("values") or [],
+                x0, x1,
+                colors or ["#3b82f6"],
+                cats,
+                show_values=self._show_values,
+                value_fmt=self._values_fmt,
+            )
+            # ref lines: hline draws across values (vertical), vline across cats
+            for hl in getattr(self, "_hlines", []) or []:
+                r.vline(hl["y"], x0, x1, hl.get("color") or "#94a3b8",
+                        dashed=hl.get("dashed", True), width=hl.get("width", 1.5))
+            for vl in getattr(self, "_vlines", []) or []:
+                r.hline(vl["x"], 0, max(n, 1), vl.get("color") or "#94a3b8",
+                        dashed=vl.get("dashed", True), width=vl.get("width", 1.5))
+            r.xlabel(self._xlabel)
+            r.ylabel(self._ylabel)
+            if getattr(self, "_footnote", ""):
+                r.footnote(self._footnote)
+            return r.finish()
+
+        # decide y range *before* drawing axes (stacked totals differ from raw vals)
         if self._ylim:
             y0, y1 = self._ylim
+        elif stacked:
+            totals = []
+            for i in range(n):
+                totals.append(sum(
+                    float(sv[i]) for sv in (s.get("values") or [] for s in series)
+                    if i < len(sv) and isinstance(sv[i], (int, float)) and math.isfinite(float(sv[i]))
+                ))
+            y0, y1 = utils.data_range(totals + [0.0], pad=0.08, include_zero=True)
         else:
             y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
 
@@ -1088,6 +1515,7 @@ class Plot:
             grid=self._grid,
             xlabels=cats,
             categorical_x=True,
+            rotate_x=self._xrot,
         )
         # Render background highlight spans
         for hs in getattr(self, "_hspans", []) or []:
@@ -1095,34 +1523,24 @@ class Plot:
         for vs in getattr(self, "_vspans", []) or []:
             r.vspan(vs["xmin"], vs["xmax"], 0, max(n, 1), vs["color"], vs["alpha"])
 
-        n_groups = len(self._series)
         legend_items: list[tuple[str, str]] = []
 
         # stacked multi-series
-        if getattr(self, "_stacked", False) and n_groups > 1:
+        if stacked:
             series_vals = []
             colors = []
-            for gi, s in enumerate(self._series):
+            for gi, s in enumerate(series):
                 series_vals.append(s.get("values") or [])
                 c = s.get("color") or palette[gi % len(palette)]
                 colors.append(c)
                 legend_items.append((s["label"], c))
-            # recompute y range for stacks
-            if self._ylim is None:
-                totals = []
-                for i in range(n):
-                    totals.append(sum(
-                        float(sv[i]) for sv in series_vals
-                        if i < len(sv) and isinstance(sv[i], (int, float)) and math.isfinite(float(sv[i]))
-                    ))
-                y0, y1 = utils.data_range(totals + [0.0], pad=0.08, include_zero=True)
-                # redraw axes with new range — axes already drawn; for simplicity stack with existing
             r.bars_stacked(max(n, 1), series_vals, y0, y1, colors)
         else:
-            for gi, s in enumerate(self._series):
+            for gi, s in enumerate(series):
                 if n_groups == 1:
-                    if self._color:
-                        cols = [self._color] * max(n, 1)
+                    single = s.get("color") or self._color
+                    if single:
+                        cols = [single] * max(n, 1)
                     else:
                         cols = [palette[i % len(palette)] for i in range(max(n, 1))]
                 else:
@@ -1138,6 +1556,7 @@ class Plot:
                     group=gi,
                     n_groups=n_groups,
                     show_values=self._show_values and n_groups == 1,
+                    value_fmt=self._values_fmt,
                 )
 
         # ref lines (value on y)
@@ -1153,10 +1572,15 @@ class Plot:
             r.footnote(self._footnote)
         return r.finish()
 
-    def _render_xy(self, r: SVGRenderer, palette: list[str]) -> str:
+    def _prepare_xy(
+        self,
+    ) -> tuple[list[dict[str, Any]], list[float], list[float], bool, bool]:
+        """Shared SVG/raster prep: sorting, smoothing, error bars, log detection."""
+        prepared: list[dict[str, Any]] = []
         all_x: list[float] = []
         all_y: list[float] = []
-        prepared: list[dict[str, Any]] = []
+        log_x = bool(getattr(self, "_logx", False))
+        log_y = bool(getattr(self, "_logy", False))
 
         for s in self._series:
             xs = list(s.get("x") or [])
@@ -1165,19 +1589,75 @@ class Plot:
                 xs, ys = utils.align_xy(xs, ys, drop_nan=False, sort_x=True)
             n = min(len(xs), len(ys))
             xs, ys = xs[:n], ys[:n]
-            for x, y in zip(xs, ys):
-                if isinstance(x, (int, float)) and math.isfinite(float(x)):
-                    all_x.append(float(x))
-                if isinstance(y, (int, float)) and math.isfinite(float(y)):
-                    all_y.append(float(y))
-            prepared.append({**s, "x": xs, "y": ys})
+            if getattr(self, "_smooth", None):
+                ys = utils.moving_average(ys, int(self._smooth))
+
+            # error bars: scalar → every series; flat seq → first; nested → per series
+            idx = len(prepared)
+            yerr, xerr = s.get("yerr"), s.get("xerr")
+            for key, store in (("_yerr", "yerr"), ("_xerr", "xerr")):
+                val = getattr(self, key, None)
+                if val is None:
+                    continue
+                if isinstance(val, (int, float)):
+                    if store == "yerr":
+                        yerr = val
+                    else:
+                        xerr = val
+                else:
+                    seq = utils.as_list(val)
+                    if seq and isinstance(seq[0], (list, tuple)):
+                        if idx < len(seq):
+                            if store == "yerr":
+                                yerr = seq[idx]
+                            else:
+                                xerr = seq[idx]
+                    elif idx == 0:
+                        if store == "yerr":
+                            yerr = seq
+                        else:
+                            xerr = seq
+
+            finite_x = [
+                float(x) for x in xs
+                if isinstance(x, (int, float)) and math.isfinite(float(x))
+            ]
+            finite_y = [
+                float(y) for y in ys
+                if isinstance(y, (int, float)) and math.isfinite(float(y))
+            ]
+            all_x.extend(finite_x)
+            all_y.extend(finite_y)
+            # log axes need strictly positive data; fall back to linear otherwise
+            if log_x and any(v <= 0 for v in finite_x):
+                log_x = False
+            if log_y and any(v <= 0 for v in finite_y):
+                log_y = False
+            prepared.append({**s, "x": xs, "y": ys, "yerr": yerr, "xerr": xerr})
+        return prepared, all_x, all_y, log_x, log_y
+
+    def _log_range(self, values: list[float], pad: float = 0.12) -> tuple[float, float]:
+        """Positive range for log axes: multiplicative padding (never ≤ 0)."""
+        pos = sorted(v for v in values if v > 0)
+        if not pos:
+            return 1.0, 10.0
+        if pos[0] == pos[-1]:
+            return pos[0] / (1 + pad), pos[-1] * (1 + pad)
+        return pos[0] / (1 + pad), pos[-1] * (1 + pad)
+
+    def _render_xy(self, r: SVGRenderer, palette: list[str]) -> str:
+        prepared, all_x, all_y, log_x, log_y = self._prepare_xy()
 
         if not all_x and not all_y:
             r.empty_message("No numeric data")
             return r.finish()
 
-        x0, x1 = self._xlim if self._xlim else utils.data_range(all_x, pad=0.02)
-        y0, y1 = self._ylim if self._ylim else utils.data_range(all_y, pad=0.08)
+        x0, x1 = self._xlim if self._xlim else (
+            self._log_range(all_x) if log_x else utils.data_range(all_x, pad=0.02)
+        )
+        y0, y1 = self._ylim if self._ylim else (
+            self._log_range(all_y) if log_y else utils.data_range(all_y, pad=0.08)
+        )
 
         # categorical x labels if we stored them
         if self._categories and all(
@@ -1191,9 +1671,21 @@ class Plot:
                 grid=self._grid,
                 xlabels=self._categories,
                 categorical_x=True,
+                rotate_x=self._xrot,
+                log_y=log_y,
+                datetime_x=self._x_is_datetime,
             )
         else:
-            r.axes(x0, x1, y0, y1, grid=self._grid)
+            r.axes(
+                x0, x1, y0, y1,
+                grid=self._grid,
+                rotate_x=self._xrot,
+                log_x=log_x,
+                log_y=log_y,
+                datetime_x=self._x_is_datetime,
+                xticks=self._xticks,
+                yticks=self._yticks,
+            )
 
         # Render background highlight spans
         for hs in getattr(self, "_hspans", []) or []:
@@ -1202,6 +1694,7 @@ class Plot:
             r.vspan(vs["xmin"], vs["xmax"], x0, x1, vs["color"], vs["alpha"])
 
         legend_items: list[tuple[str, str]] = []
+        cap = (x1 - x0) * 0.01 if x1 != x0 else 0.5
         for i, s in enumerate(prepared):
             c = s.get("color")
             if not c:
@@ -1233,8 +1726,31 @@ class Plot:
                     width=self._linewidth,
                     markers=self._auto_markers(n_pts),
                     dashed=self._dashed,
+                    step=self._step,
                 )
+            # error bars (data coords, so they track log/zoom automatically)
+            self._draw_err(r, xs, ys, s.get("yerr"), cap, c, vertical=True)
+            self._draw_err(r, xs, ys, s.get("xerr"), cap, c, vertical=False)
             legend_items.append((s["label"], c))
+
+        # trend line overlay
+        if self._trend and prepared:
+            fit = utils.linear_regression(prepared[0]["x"], prepared[0]["y"])
+            if fit is not None:
+                slope, intercept, _r2 = fit
+                tcol = self._trend_color or (
+                    palette[1 % len(palette)] if len(palette) > 1 else palette[0]
+                )
+                r.line(
+                    [x0, x1],
+                    [intercept + slope * x0, intercept + slope * x1],
+                    x0, x1, y0, y1,
+                    tcol,
+                    width=2,
+                    markers=False,
+                    dashed=self._trend_dashed,
+                )
+                legend_items.append((self._trend_label, tcol))
 
         # reference lines & annotations (data coords)
         for hl in getattr(self, "_hlines", []) or []:
@@ -1245,9 +1761,10 @@ class Plot:
                     dashed=vl.get("dashed", True), width=vl.get("width", 1.5))
         for ann in getattr(self, "_annotations", []) or []:
             r.annotate(ann["x"], ann["y"], x0, x1, y0, y1, ann["text"],
-                       color=ann.get("color"), anchor=ann.get("anchor") or "start")
+                       color=ann.get("color"), anchor=ann.get("anchor") or "start",
+                       size=ann.get("size", 11))
 
-        if self._legend and len(prepared) > 1:
+        if self._legend and len(legend_items) > 1:
             r.legend(
                 legend_items,
                 kind="scatter" if self.kind == "scatter" else "line",
@@ -1259,6 +1776,41 @@ class Plot:
         if getattr(self, "_footnote", ""):
             r.footnote(self._footnote)
         return r.finish()
+
+    def _draw_err(
+        self,
+        r: Any,
+        xs: list[float],
+        ys: list[float],
+        err: Any,
+        cap: float,
+        color: str,
+        *,
+        vertical: bool,
+    ) -> None:
+        """Draw error bars with caps using the unified primitive API."""
+        if err is None:
+            return
+        if isinstance(err, (list, tuple)):
+            pairs = zip(xs, ys, err)
+        else:
+            pairs = ((x, y, err) for x, y in zip(xs, ys))
+        for x, y, e in pairs:
+            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+                continue
+            if not math.isfinite(float(x)) or not math.isfinite(float(y)):
+                continue
+            f = utils.to_float(e)
+            if f is None or f < 0 or not math.isfinite(f):
+                continue
+            if vertical:
+                r.draw_line(x, y - f, x, y + f, color, width=1.5)
+                r.draw_line(x - cap, y - f, x + cap, y - f, color, width=1.5)
+                r.draw_line(x - cap, y + f, x + cap, y + f, color, width=1.5)
+            else:
+                r.draw_line(x - f, y, x + f, y, color, width=1.5)
+                r.draw_line(x - f, y - cap, x - f, y + cap, color, width=1.5)
+                r.draw_line(x + f, y - cap, x + f, y + cap, color, width=1.5)
 
     # ------------------------------------------------------------------ #
     # raster render (PNG / JPEG / …)
@@ -1322,6 +1874,10 @@ class Plot:
                 self._raster_bar(r, palette)
             elif kind == "custom":
                 self._raster_custom(r, palette)
+            elif kind == "box":
+                self._raster_box(r, palette)
+            elif kind == "heat":
+                self._raster_heat(r, palette)
             else:
                 self._raster_xy(r, palette)
         except Exception as exc:
@@ -1377,43 +1933,181 @@ class Plot:
             colors[0] = self._color
         r.pie(s["values"], s["labels"], colors, donut=self._donut)
 
-    def _raster_bar(self, r, palette: list[str]) -> None:
-        cats = list(self._series[0].get("categories") or [])
-        n = len(cats)
+    def _raster_box(self, r, palette: list[str]) -> None:
+        s = self._series[0]
+        boxes = s.get("boxes") or []
+        labels = s.get("labels") or []
+        stats = [utils.box_stats(b) for b in boxes]
         all_vals: list[float] = []
-        for s in self._series:
+        for b in boxes:
+            for v in b:
+                if isinstance(v, (int, float)) and math.isfinite(float(v)):
+                    all_vals.append(float(v))
+        n = max(len(boxes), 1)
+        colors = [palette[i % len(palette)] for i in range(len(boxes) or 1)]
+        if self._horizontal:
+            if self._xlim:
+                x0, x1 = self._xlim
+            else:
+                x0, x1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
+            r.axes(x0, x1, 0, n, grid=self._grid, categorical_x=False, yticks=[])
+            r.boxplot(stats, x0, x1, colors, labels=labels, horizontal=True)
+        else:
+            if self._ylim:
+                y0, y1 = self._ylim
+            else:
+                y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
+            r.axes(0, n, y0, y1, grid=self._grid, xlabels=labels, categorical_x=True,
+                   rotate_x=self._xrot)
+            r.boxplot(stats, y0, y1, colors)
+
+    def _raster_heat(self, r, palette: list[str]) -> None:
+        s = self._series[0]
+        matrix = s.get("matrix") or []
+        rows = len(matrix)
+        if rows == 0:
+            r.empty_message("No data")
+            return
+        cols = max(len(row) for row in matrix)
+        row_labels = s.get("row_labels")
+        col_labels = s.get("col_labels")
+        show_values = bool(s.get("show_values", True))
+        colorbar = bool(s.get("colorbar", True))
+        cmap = s.get("cmap") or "blues"
+        from .style import get_heatmap
+        c0, c1 = get_heatmap(cmap)
+
+        if colorbar:
+            r.margin["right"] = max(r.margin["right"], 62)
+        if row_labels:
+            r.margin["left"] = max(r.margin["left"], 16 + max(len(l) for l in row_labels) * 6)
+        if col_labels:
+            r.margin["bottom"] = max(r.margin["bottom"], 64)
+        r._sync_geom()
+
+        finite = [
+            v for row in matrix for v in row
+            if v is not None and math.isfinite(float(v))
+        ]
+        vmin = min(finite) if finite else 0.0
+        vmax = max(finite) if finite else 1.0
+        if vmax == vmin:
+            vmax = vmin + 1.0
+        cell_colors: list[list[str]] = []
+        for row in matrix:
+            cell_colors.append([
+                utils.interp_color(c0, c1, (float(v) - vmin) / (vmax - vmin))
+                if v is not None else r.theme["grid"]
+                for v in row
+            ])
+        r.heatmap(matrix, cell_colors, r.theme["grid"],
+                  show_values=show_values, value_fmt=self._values_fmt)
+        if colorbar:
+            r.heat_colorbar(c0, c1, vmin, vmax)
+        left, top = r._ml, r._mt
+        cell_h = r._ph / rows
+        cell_w = r._pw / cols
+        for i, lab in enumerate(row_labels or []):
+            r.draw_text(left - 8, top + (i + 0.5) * cell_h - 4,
+                        utils.truncate_label(lab, 12), r.theme["muted"],
+                        align="end", raw_coords=True)
+        for j, lab in enumerate(col_labels or []):
+            r.draw_text(left + (j + 0.5) * cell_w, top + r._ph + 14,
+                        utils.truncate_label(lab, 10), r.theme["muted"],
+                        align="center", raw_coords=True)
+
+    def _raster_bar(self, r, palette: list[str]) -> None:
+        series = list(self._series)
+        cats = list(series[0].get("categories") or [])
+        n = len(cats)
+
+        # .sort() → order categories by value (desc), single series or total
+        if self._sort_x and n > 1 and series:
+            if len(series) == 1:
+                vals0 = series[0].get("values") or []
+                order = sorted(
+                    range(n),
+                    key=lambda i: float(vals0[i]) if i < len(vals0)
+                    and isinstance(vals0[i], (int, float)) and math.isfinite(float(vals0[i])) else float("-inf"),
+                    reverse=True,
+                )
+            else:
+                def _total(i: int) -> float:
+                    tot = 0.0
+                    for s in series:
+                        vals = s.get("values") or []
+                        if i < len(vals) and isinstance(vals[i], (int, float)) and math.isfinite(float(vals[i])):
+                            tot += float(vals[i])
+                    return tot
+
+                order = sorted(range(n), key=_total, reverse=True)
+            cats = [cats[i] for i in order]
+            for s in series:
+                vals = s.get("values") or []
+                s["values"] = [vals[i] if i < len(vals) else 0.0 for i in order]
+            series[0]["categories"] = cats
+
+        all_vals: list[float] = []
+        for s in series:
             for v in s.get("values") or []:
                 if isinstance(v, (int, float)) and math.isfinite(float(v)):
                     all_vals.append(float(v))
+
+        n_groups = len(series)
+        stacked = bool(getattr(self, "_stacked", False)) and n_groups > 1
 
         if self._horizontal:
             if self._xlim:
                 x0, x1 = self._xlim
             else:
                 x0, x1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
-            r.axes(x0, x1, 0, 1, grid=self._grid, categorical_x=False)
+            r.axes(x0, x1, 0, max(n, 1), grid=self._grid, categorical_x=False, yticks=[])
 
-            # Render background highlight spans
+            # spans swap meaning for horizontal bars
             for hs in getattr(self, "_hspans", []) or []:
-                if hasattr(r, "hspan"):
-                    r.hspan(hs["ymin"], hs["ymax"], 0, 1, hs["color"], hs["alpha"])
-            for vs in getattr(self, "_vspans", []) or []:
                 if hasattr(r, "vspan"):
-                    r.vspan(vs["xmin"], vs["xmax"], x0, x1, vs["color"], vs["alpha"])
+                    r.vspan(hs["ymin"], hs["ymax"], x0, x1, hs["color"], hs["alpha"])
+            for vs in getattr(self, "_vspans", []) or []:
+                if hasattr(r, "hspan"):
+                    r.hspan(vs["xmin"], vs["xmax"], 0, max(n, 1), vs["color"], vs["alpha"])
 
+            s0 = series[0]
+            single = s0.get("color") or self._color
             colors = (
-                [self._color] * n
-                if self._color and len(self._series) == 1
+                [single] * n
+                if single and n_groups == 1
                 else [palette[i % len(palette)] for i in range(max(n, 1))]
             )
-            r.bars_h(n, self._series[0]["values"], x0, x1, colors or ["#3b82f6"], cats)
+            r.bars_h(
+                max(n, 1), s0.get("values") or [], x0, x1,
+                colors or ["#3b82f6"], cats,
+                show_values=self._show_values, value_fmt=self._values_fmt,
+            )
+            for hl in getattr(self, "_hlines", []) or []:
+                if hasattr(r, "vline"):
+                    r.vline(hl["y"], x0, x1, hl.get("color") or "#94a3b8",
+                            dashed=hl.get("dashed", True), width=hl.get("width", 1.5))
+            for vl in getattr(self, "_vlines", []) or []:
+                if hasattr(r, "hline"):
+                    r.hline(vl["x"], 0, max(n, 1), vl.get("color") or "#94a3b8",
+                            dashed=vl.get("dashed", True), width=vl.get("width", 1.5))
             return
 
+        # decide y range *before* drawing axes
         if self._ylim:
             y0, y1 = self._ylim
+        elif stacked:
+            totals = []
+            for i in range(n):
+                totals.append(sum(
+                    float(sv[i]) for sv in (s.get("values") or [] for s in series)
+                    if i < len(sv) and isinstance(sv[i], (int, float)) and math.isfinite(float(sv[i]))
+                ))
+            y0, y1 = utils.data_range(totals + [0.0], pad=0.08, include_zero=True)
         else:
             y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
-        r.axes(0, max(n, 1), y0, y1, grid=self._grid, xlabels=cats, categorical_x=True)
+        r.axes(0, max(n, 1), y0, y1, grid=self._grid, xlabels=cats, categorical_x=True,
+               rotate_x=self._xrot)
 
         # Render background highlight spans
         for hs in getattr(self, "_hspans", []) or []:
@@ -1423,30 +2117,22 @@ class Plot:
             if hasattr(r, "vspan"):
                 r.vspan(vs["xmin"], vs["xmax"], 0, max(n, 1), vs["color"], vs["alpha"])
 
-        n_groups = len(self._series)
         legend_items: list[tuple[str, str]] = []
-        if getattr(self, "_stacked", False) and n_groups > 1 and hasattr(r, "bars_stacked"):
+        if stacked and hasattr(r, "bars_stacked"):
             series_vals, colors = [], []
-            for gi, s in enumerate(self._series):
+            for gi, s in enumerate(series):
                 series_vals.append(s.get("values") or [])
                 c = s.get("color") or palette[gi % len(palette)]
                 colors.append(c)
                 legend_items.append((s["label"], c))
-            if self._ylim is None:
-                totals = []
-                for i in range(n):
-                    totals.append(sum(
-                        float(sv[i]) for sv in series_vals
-                        if i < len(sv) and isinstance(sv[i], (int, float)) and math.isfinite(float(sv[i]))
-                    ))
-                y0, y1 = utils.data_range(totals + [0.0], pad=0.08, include_zero=True)
             r.bars_stacked(max(n, 1), series_vals, y0, y1, colors)
         else:
-            for gi, s in enumerate(self._series):
+            for gi, s in enumerate(series):
                 if n_groups == 1:
+                    single = s.get("color") or self._color
                     cols = (
-                        [self._color] * max(n, 1)
-                        if self._color
+                        [single] * max(n, 1)
+                        if single
                         else [palette[i % len(palette)] for i in range(max(n, 1))]
                     )
                 else:
@@ -1462,6 +2148,7 @@ class Plot:
                     group=gi,
                     n_groups=n_groups,
                     show_values=self._show_values and n_groups == 1,
+                    value_fmt=self._values_fmt,
                 )
         for hl in getattr(self, "_hlines", []) or []:
             if hasattr(r, "hline"):
@@ -1474,31 +2161,25 @@ class Plot:
                 r.legend(legend_items, kind="bar")
 
     def _raster_xy(self, r, palette: list[str]) -> None:
-        all_x: list[float] = []
-        all_y: list[float] = []
-        prepared: list[dict[str, Any]] = []
-        for s in self._series:
-            xs = list(s.get("x") or [])
-            ys = list(s.get("y") or [])
-            if self._sort_x:
-                xs, ys = utils.align_xy(xs, ys, drop_nan=False, sort_x=True)
-            n = min(len(xs), len(ys))
-            xs, ys = xs[:n], ys[:n]
-            for x, y in zip(xs, ys):
-                if isinstance(x, (int, float)) and math.isfinite(float(x)):
-                    all_x.append(float(x))
-                if isinstance(y, (int, float)) and math.isfinite(float(y)):
-                    all_y.append(float(y))
-            prepared.append({**s, "x": xs, "y": ys})
+        prepared, all_x, all_y, log_x, log_y = self._prepare_xy()
         if not all_x and not all_y:
             r.empty_message("No numeric data")
             return
-        x0, x1 = self._xlim if self._xlim else utils.data_range(all_x, pad=0.02)
-        y0, y1 = self._ylim if self._ylim else utils.data_range(all_y, pad=0.08)
+        x0, x1 = self._xlim if self._xlim else (
+            self._log_range(all_x) if log_x else utils.data_range(all_x, pad=0.02)
+        )
+        y0, y1 = self._ylim if self._ylim else (
+            self._log_range(all_y) if log_y else utils.data_range(all_y, pad=0.08)
+        )
         if self._categories and all(abs(x - round(x)) < 1e-9 for x in all_x):
-            r.axes(0, max(len(self._categories), 1), y0, y1, grid=self._grid, xlabels=self._categories, categorical_x=True)
+            r.axes(0, max(len(self._categories), 1), y0, y1, grid=self._grid,
+                   xlabels=self._categories, categorical_x=True,
+                   rotate_x=self._xrot, log_y=log_y, datetime_x=self._x_is_datetime)
         else:
-            r.axes(x0, x1, y0, y1, grid=self._grid)
+            r.axes(x0, x1, y0, y1, grid=self._grid,
+                   rotate_x=self._xrot, log_x=log_x, log_y=log_y,
+                   datetime_x=self._x_is_datetime,
+                   xticks=self._xticks, yticks=self._yticks)
 
         # Render background highlight spans
         for hs in getattr(self, "_hspans", []) or []:
@@ -1509,6 +2190,7 @@ class Plot:
                 r.vspan(vs["xmin"], vs["xmax"], x0, x1, vs["color"], vs["alpha"])
 
         legend_items: list[tuple[str, str]] = []
+        cap = (x1 - x0) * 0.01 if x1 != x0 else 0.5
         for i, s in enumerate(prepared):
             c = s.get("color") or (self._color if i == 0 and self._color else palette[i % len(palette)])
             sk = s.get("kind", self.kind)
@@ -1523,8 +2205,33 @@ class Plot:
             elif sk == "scatter":
                 r.scatter_series(xs, ys, x0, x1, y0, y1, c, size=self._size, alpha=self._alpha)
             else:
-                r.line_series(xs, ys, x0, x1, y0, y1, c, width=self._linewidth, markers=self._auto_markers(n_pts))
+                r.line_series(
+                    xs, ys, x0, x1, y0, y1, c,
+                    width=self._linewidth,
+                    markers=self._auto_markers(n_pts),
+                    dashed=self._dashed,
+                    step=self._step,
+                )
+            self._draw_err(r, xs, ys, s.get("yerr"), cap, c, vertical=True)
+            self._draw_err(r, xs, ys, s.get("xerr"), cap, c, vertical=False)
             legend_items.append((s["label"], c))
+
+        # trend line overlay
+        if self._trend and prepared:
+            fit = utils.linear_regression(prepared[0]["x"], prepared[0]["y"])
+            if fit is not None:
+                slope, intercept, _r2 = fit
+                tcol = self._trend_color or (
+                    palette[1 % len(palette)] if len(palette) > 1 else palette[0]
+                )
+                r.line_series(
+                    [x0, x1],
+                    [intercept + slope * x0, intercept + slope * x1],
+                    x0, x1, y0, y1,
+                    tcol, width=2, markers=False, dashed=self._trend_dashed,
+                )
+                legend_items.append((self._trend_label, tcol))
+
         for hl in getattr(self, "_hlines", []) or []:
             if hasattr(r, "hline"):
                 r.hline(hl["y"], y0, y1, hl.get("color") or "#94a3b8",
@@ -1536,8 +2243,9 @@ class Plot:
         for ann in getattr(self, "_annotations", []) or []:
             if hasattr(r, "annotate"):
                 r.annotate(ann["x"], ann["y"], x0, x1, y0, y1, ann["text"],
-                           color=ann.get("color"), anchor=ann.get("anchor") or "start")
-        if self._legend and len(prepared) > 1:
+                           color=ann.get("color"), anchor=ann.get("anchor") or "start",
+                           size=ann.get("size", 11))
+        if self._legend and len(legend_items) > 1:
             try:
                 r.legend(legend_items, kind="scatter" if self.kind == "scatter" else "line",
                          pos=getattr(self, "_legend_pos", "top-right"))

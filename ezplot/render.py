@@ -55,6 +55,8 @@ class SVGRenderer:
         self.x1 = 1.0
         self.y0 = 0.0
         self.y1 = 1.0
+        self._logx = False
+        self._logy = False
 
     # --- geometry ---------------------------------------------------------
 
@@ -69,6 +71,10 @@ class SVGRenderer:
     def _sx(self, x: float, x0: float, x1: float) -> float:
         if not math.isfinite(x):
             return self.margin["left"]
+        if self._logx:
+            if x <= 0 or x0 <= 0 or x1 <= 0 or x1 == x0:
+                return self.margin["left"] + self.plot_w / 2
+            return self.margin["left"] + (math.log10(x) - math.log10(x0)) / (math.log10(x1) - math.log10(x0)) * self.plot_w
         if x1 == x0 or not math.isfinite(x0) or not math.isfinite(x1):
             return self.margin["left"] + self.plot_w / 2
         return self.margin["left"] + (x - x0) / (x1 - x0) * self.plot_w
@@ -76,6 +82,10 @@ class SVGRenderer:
     def _sy(self, y: float, y0: float, y1: float) -> float:
         if not math.isfinite(y):
             return self.margin["top"] + self.plot_h / 2
+        if self._logy:
+            if y <= 0 or y0 <= 0 or y1 <= 0 or y1 == y0:
+                return self.margin["top"] + self.plot_h / 2
+            return self.margin["top"] + (1 - (math.log10(y) - math.log10(y0)) / (math.log10(y1) - math.log10(y0))) * self.plot_h
         if y1 == y0 or not math.isfinite(y0) or not math.isfinite(y1):
             return self.margin["top"] + self.plot_h / 2
         return self.margin["top"] + (1 - (y - y0) / (y1 - y0)) * self.plot_h
@@ -149,15 +159,26 @@ class SVGRenderer:
         yticks: list[float] | None = None,
         xlabels: list[str] | None = None,
         categorical_x: bool = False,
-        rotate_x: bool = False,
+        rotate_x: bool | float = False,
+        log_x: bool = False,
+        log_y: bool = False,
+        datetime_x: bool = False,
     ) -> None:
         self.x0 = x0
         self.x1 = x1
         self.y0 = y0
         self.y1 = y1
+        self._logx = bool(log_x)
+        self._logy = bool(log_y)
         t = self.theme
-        xt = xticks if xticks is not None else utils.nice_ticks(x0, x1)
-        yt = yticks if yticks is not None else utils.nice_ticks(y0, y1)
+        if log_x:
+            xt = xticks if xticks is not None else utils.log_ticks(x0, x1)
+        else:
+            xt = xticks if xticks is not None else utils.nice_ticks(x0, x1)
+        if log_y:
+            yt = yticks if yticks is not None else utils.log_ticks(y0, y1)
+        else:
+            yt = yticks if yticks is not None else utils.nice_ticks(y0, y1)
 
         # keep ticks inside domain (with tiny epsilon)
         def _in_y(v: float) -> bool:
@@ -166,9 +187,16 @@ class SVGRenderer:
         def _in_x(v: float) -> bool:
             return x0 - 1e-12 <= v <= x1 + 1e-12
 
-        yt = [v for v in yt if _in_y(v)] or [y0, y1]
+        # explicit tick lists (possibly empty) are honored exactly
+        if yticks is not None:
+            yt = [v for v in yt if _in_y(v)]
+        else:
+            yt = [v for v in yt if _in_y(v)] or [y0, y1]
         if not categorical_x:
-            xt = [v for v in xt if _in_x(v)] or [x0, x1]
+            if xticks is not None:
+                xt = [v for v in xt if _in_x(v)]
+            else:
+                xt = [v for v in xt if _in_x(v)] or [x0, x1]
 
         if grid:
             for y in yt:
@@ -198,8 +226,10 @@ class SVGRenderer:
             f'stroke="{t["axis"]}" stroke-width="1.5"/>'
         )
 
-        # Detect if x-axis is datetime-based
-        is_datetime_x = (x0 > 1e8 and x1 > 1e8 and (x1 - x0) < 1e11) # sensible range for Unix timestamps
+        # Detect if x-axis is datetime-based (explicit flag or heuristic)
+        is_datetime_x = bool(datetime_x) or (
+            x0 > 1e8 and x1 > 1e8 and (x1 - x0) < 1e11
+        )  # sensible range for Unix timestamps
 
         for y in yt:
             sy = self._sy(y, y0, y1)
@@ -213,11 +243,19 @@ class SVGRenderer:
                 f"{utils.escape_xml(utils.format_number(y))}</text>"
             )
 
+        # x tick label rotation: explicit angle wins, else auto rules
+        if rotate_x not in (None, False):
+            do_rotate = True
+            angle = 35.0 if rotate_x is True else float(rotate_x)
+        else:
+            do_rotate = False
+            angle = 35.0
+
         if categorical_x and xlabels is not None:
             n = len(xlabels)
             # auto-rotate if many / long labels
             max_len = max((len(str(l)) for l in xlabels), default=0)
-            do_rotate = rotate_x or n > 8 or max_len > 10
+            do_rotate = do_rotate or n > 8 or max_len > 10
             for i, lab in enumerate(xlabels):
                 sx = self._sx(i + 0.5, 0, n) if n else left
                 self._parts.append(
@@ -229,7 +267,7 @@ class SVGRenderer:
                     self._parts.append(
                         f'<text x="{sx:.2f}" y="{bottom + 12}" text-anchor="end" '
                         f'font-family="{t["font"]}" font-size="10" fill="{t["muted"]}" '
-                        f'transform="rotate(-35 {sx:.2f} {bottom + 12})">'
+                        f'transform="rotate(-{angle:.0f} {sx:.2f} {bottom + 12})">'
                         f"{utils.escape_xml(shown)}</text>"
                     )
                 else:
@@ -240,7 +278,7 @@ class SVGRenderer:
                     )
         else:
             # For datetime or crowded labels, rotate automatically
-            do_rotate = rotate_x or is_datetime_x or len(xt) > 6
+            do_rotate = do_rotate or is_datetime_x or len(xt) > 6
             for x in xt:
                 sx = self._sx(x, x0, x1)
                 self._parts.append(
@@ -252,7 +290,7 @@ class SVGRenderer:
                     self._parts.append(
                         f'<text x="{sx:.2f}" y="{bottom + 12}" text-anchor="end" '
                         f'font-family="{t["font"]}" font-size="10" fill="{t["muted"]}" '
-                        f'transform="rotate(-35 {sx:.2f} {bottom + 12})">'
+                        f'transform="rotate(-{angle:.0f} {sx:.2f} {bottom + 12})">'
                         f"{utils.escape_xml(label_text)}</text>"
                     )
                 else:
@@ -343,6 +381,7 @@ class SVGRenderer:
         width: float = 2.5,
         markers: bool = True,
         dashed: bool = False,
+        step: bool = False,
     ) -> None:
         # break lines on NaN gaps
         segs: list[list[tuple[float, float]]] = [[]]
@@ -370,7 +409,13 @@ class SVGRenderer:
                 continue
             if len(pts) < 2:
                 continue
-            d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in pts)
+            if step:
+                # post-step: hold y until the next x, then jump vertically
+                d = f"M {pts[0][0]:.2f},{pts[0][1]:.2f}"
+                for (px, py), (nx, ny) in zip(pts, pts[1:]):
+                    d += f" L {nx:.2f},{py:.2f} L {nx:.2f},{ny:.2f}"
+            else:
+                d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in pts)
             self._parts.append(
                 f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width}" '
                 f'stroke-linecap="round" stroke-linejoin="round"{dash} '
@@ -397,18 +442,34 @@ class SVGRenderer:
         color: str,
         opacity: float = 0.25,
     ) -> None:
-        pts = self._valid_pts(xs, ys, x0, x1, y0, y1)
-        if len(pts) < 2:
-            return
+        # build per-gap segments (NaN breaks), then fill each polygon separately
+        segs: list[list[tuple[float, float]]] = [[]]
+        for x, y in zip(xs, ys):
+            if (
+                not isinstance(x, (int, float))
+                or not isinstance(y, (int, float))
+                or not math.isfinite(float(x))
+                or not math.isfinite(float(y))
+            ):
+                if segs[-1]:
+                    segs.append([])
+                continue
+            segs[-1].append((self._sx(float(x), x0, x1), self._sy(float(y), y0, y1)))
         baseline_y = 0.0 if y0 <= 0 <= y1 else y0
         baseline = self._sy(baseline_y, y0, y1)
-        d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in pts)
-        d += f" L {pts[-1][0]:.2f},{baseline:.2f} L {pts[0][0]:.2f},{baseline:.2f} Z"
-        self._parts.append(
-            f'<path d="{d}" fill="{color}" fill-opacity="{opacity}" '
-            f'stroke="none" clip-path="url(#{self._clip_id})"/>'
-        )
-        self.line(xs, ys, x0, x1, y0, y1, color, width=2, markers=False)
+        drew = False
+        for pts in segs:
+            if len(pts) < 2:
+                continue
+            d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in pts)
+            d += f" L {pts[-1][0]:.2f},{baseline:.2f} L {pts[0][0]:.2f},{baseline:.2f} Z"
+            self._parts.append(
+                f'<path d="{d}" fill="{color}" fill-opacity="{opacity}" '
+                f'stroke="none" clip-path="url(#{self._clip_id})"/>'
+            )
+            drew = True
+        if drew:
+            self.line(xs, ys, x0, x1, y0, y1, color, width=2, markers=False)
 
     def scatter(
         self,
@@ -449,6 +510,7 @@ class SVGRenderer:
         group: int = 0,
         n_groups: int = 1,
         show_values: bool = False,
+        value_fmt: str | None = None,
     ) -> None:
         if n <= 0:
             return
@@ -484,10 +546,11 @@ class SVGRenderer:
             )
             if show_values and bar_w >= 14:
                 ty = top - 4 if val >= base_val else top + h + 12
+                lab = value_fmt.format(val) if value_fmt else utils.format_number(val)
                 self._parts.append(
                     f'<text x="{x + bar_w/2:.2f}" y="{ty:.2f}" text-anchor="middle" '
                     f'font-family="{t["font"]}" font-size="10" fill="{t["muted"]}">'
-                    f"{utils.escape_xml(utils.format_number(val))}</text>"
+                    f"{utils.escape_xml(lab)}</text>"
                 )
 
     def bars_h(
@@ -499,6 +562,8 @@ class SVGRenderer:
         colors: list[str],
         categories: list[str],
         gap: float = 0.28,
+        show_values: bool = False,
+        value_fmt: str | None = None,
     ) -> None:
         """Horizontal bars; value mapped on x-axis, categories on y."""
         if n <= 0:
@@ -531,6 +596,16 @@ class SVGRenderer:
                 f'font-family="{t["font"]}" font-size="11" fill="{t["muted"]}">'
                 f"{utils.escape_xml(lab)}</text>"
             )
+            # value label at the bar end
+            if show_values and bar_h >= 12:
+                vlab = value_fmt.format(val) if value_fmt else utils.format_number(val)
+                anchor = "start" if val >= base_val else "end"
+                vx = x_end + 4 if val >= base_val else x_end - 4
+                self._parts.append(
+                    f'<text x="{vx:.2f}" y="{cy:.2f}" text-anchor="{anchor}" '
+                    f'font-family="{t["font"]}" font-size="10" fill="{t["muted"]}">'
+                    f"{utils.escape_xml(vlab)}</text>"
+                )
 
     def pie(
         self,
@@ -668,19 +743,196 @@ class SVGRenderer:
         )
 
     def annotate(self, x: float, y: float, x0: float, x1: float, y0: float, y1: float,
-                 text: str, color: str | None = None, anchor: str = "start") -> None:
+                 text: str, color: str | None = None, anchor: str = "start",
+                 size: float = 11) -> None:
         t = self.theme
         sx, sy = self._sx(x, x0, x1), self._sy(y, y0, y1)
         col = color or t["fg"]
-        sz = 11 * self.font_scale
+        sz = float(size) * self.font_scale
+        a = anchor if anchor in ("start", "middle", "end") else "start"
+        # offset the label away from the point depending on its anchor
+        dx = {"start": 7, "middle": 0, "end": -7}[a]
         self._parts.append(
             f'<circle cx="{sx:.2f}" cy="{sy:.2f}" r="3" fill="{col}" '
             f'clip-path="url(#{self._clip_id})"/>'
         )
         self._parts.append(
-            f'<text x="{sx + 6:.2f}" y="{sy - 6:.2f}" text-anchor="{anchor}" '
+            f'<text x="{sx + dx:.2f}" y="{sy - 6:.2f}" text-anchor="{a}" '
             f'font-family="{t["font"]}" font-size="{sz:.1f}" fill="{col}" '
             f'clip-path="url(#{self._clip_id})">{utils.escape_xml(text)}</text>'
+        )
+
+    def boxplot(
+        self,
+        stats: list[dict],
+        v0: float,
+        v1: float,
+        colors: list[str],
+        labels: list[str] | None = None,
+        horizontal: bool = False,
+        width: float = 1.5,
+    ) -> None:
+        """Draw Tukey boxplots. stats: list of box_stats() dicts."""
+        n = len(stats)
+        if n == 0:
+            return
+        t = self.theme
+        if horizontal:
+            band = self.plot_h / n
+            for i, b in enumerate(stats):
+                color = colors[i % len(colors)]
+                cy = self.margin["top"] + (i + 0.5) * band
+                h = max(4.0, band * 0.5)
+                q1x, q3x = self._sx(b["q1"], v0, v1), self._sx(b["q3"], v0, v1)
+                mx = self._sx(b["med"], v0, v1)
+                lox, hix = self._sx(b["lo"], v0, v1), self._sx(b["hi"], v0, v1)
+                cstr, a = svg_color_alpha(color, 0.35)
+                x = min(q1x, q3x)
+                w = abs(q3x - q1x)
+                self._parts.append(
+                    f'<rect x="{x:.2f}" y="{cy - h / 2:.2f}" width="{w:.2f}" height="{h:.2f}" '
+                    f'rx="2" fill="{cstr}" fill-opacity="{a:.3f}" stroke="{color}" stroke-width="{width}" '
+                    f'clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{lox:.2f}" y1="{cy:.2f}" x2="{q1x:.2f}" y2="{cy:.2f}" '
+                    f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{q3x:.2f}" y1="{cy:.2f}" x2="{hix:.2f}" y2="{cy:.2f}" '
+                    f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{lox:.2f}" y1="{cy - h / 2:.2f}" x2="{lox:.2f}" y2="{cy + h / 2:.2f}" '
+                    f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{hix:.2f}" y1="{cy - h / 2:.2f}" x2="{hix:.2f}" y2="{cy + h / 2:.2f}" '
+                    f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{mx:.2f}" y1="{cy - h / 2:.2f}" x2="{mx:.2f}" y2="{cy + h / 2:.2f}" '
+                    f'stroke="{t["fg"]}" stroke-width="{width + 0.5}" clip-path="url(#{self._clip_id})"/>'
+                )
+                for out in b.get("outliers") or []:
+                    ox = self._sx(out, v0, v1)
+                    self._parts.append(
+                        f'<circle cx="{ox:.2f}" cy="{cy:.2f}" r="3" fill="none" '
+                        f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                    )
+                if labels:
+                    lab = utils.truncate_label(labels[i] if i < len(labels) else str(i + 1), 14)
+                    self._parts.append(
+                        f'<text x="{self.margin["left"] - 8}" y="{cy + 4:.2f}" text-anchor="end" '
+                        f'font-family="{t["font"]}" font-size="11" fill="{t["muted"]}">'
+                        f"{utils.escape_xml(lab)}</text>"
+                    )
+        else:
+            band = self.plot_w / n
+            for i, b in enumerate(stats):
+                color = colors[i % len(colors)]
+                cx = self.margin["left"] + (i + 0.5) * band
+                w = max(4.0, band * 0.5)
+                q1y, q3y = self._sy(b["q1"], v0, v1), self._sy(b["q3"], v0, v1)
+                my = self._sy(b["med"], v0, v1)
+                loy, hiy = self._sy(b["lo"], v0, v1), self._sy(b["hi"], v0, v1)
+                cstr, a = svg_color_alpha(color, 0.35)
+                y = min(q1y, q3y)
+                h = abs(q3y - q1y)
+                self._parts.append(
+                    f'<rect x="{cx - w / 2:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" '
+                    f'rx="2" fill="{cstr}" fill-opacity="{a:.3f}" stroke="{color}" stroke-width="{width}" '
+                    f'clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{cx:.2f}" y1="{loy:.2f}" x2="{cx:.2f}" y2="{q1y:.2f}" '
+                    f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{cx:.2f}" y1="{q3y:.2f}" x2="{cx:.2f}" y2="{hiy:.2f}" '
+                    f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{cx - w / 2:.2f}" y1="{loy:.2f}" x2="{cx + w / 2:.2f}" y2="{loy:.2f}" '
+                    f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{cx - w / 2:.2f}" y1="{hiy:.2f}" x2="{cx + w / 2:.2f}" y2="{hiy:.2f}" '
+                    f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                )
+                self._parts.append(
+                    f'<line x1="{cx - w / 2:.2f}" y1="{my:.2f}" x2="{cx + w / 2:.2f}" y2="{my:.2f}" '
+                    f'stroke="{t["fg"]}" stroke-width="{width + 0.5}" clip-path="url(#{self._clip_id})"/>'
+                )
+                for out in b.get("outliers") or []:
+                    oy = self._sy(out, v0, v1)
+                    self._parts.append(
+                        f'<circle cx="{cx:.2f}" cy="{oy:.2f}" r="3" fill="none" '
+                        f'stroke="{color}" stroke-width="{width}" clip-path="url(#{self._clip_id})"/>'
+                    )
+
+    def heatmap(
+        self,
+        matrix: list[list[float | None]],
+        colors: list[list[str]],
+        nan_color: str,
+        show_values: bool = True,
+        value_fmt: str | None = None,
+    ) -> None:
+        """Draw a heatmap cell grid across the full plot area."""
+        rows = len(matrix)
+        if rows == 0:
+            self.empty_message("No data")
+            return
+        cols = max(len(r) for r in matrix)
+        cell_w = self.plot_w / cols
+        cell_h = self.plot_h / rows
+        t = self.theme
+        left = self.margin["left"]
+        top = self.margin["top"]
+        for i, row in enumerate(matrix):
+            for j, v in enumerate(row):
+                color = colors[i][j] if v is not None else nan_color
+                self._parts.append(
+                    f'<rect x="{left + j * cell_w:.2f}" y="{top + i * cell_h:.2f}" '
+                    f'width="{cell_w + 0.5:.2f}" height="{cell_h + 0.5:.2f}" fill="{color}"/>'
+                )
+                if show_values and v is not None and cell_w >= 34 and cell_h >= 16:
+                    lab = value_fmt.format(v) if value_fmt else utils.format_number(v)
+                    lum = 0.299 * int(color[1:3], 16) + 0.587 * int(color[3:5], 16) + 0.114 * int(color[5:7], 16)
+                    text_col = "#0f172a" if lum > 150 else "#f8fafc"
+                    self._parts.append(
+                        f'<text x="{left + (j + 0.5) * cell_w:.2f}" y="{top + (i + 0.5) * cell_h + 4:.2f}" '
+                        f'text-anchor="middle" font-family="{t["font"]}" font-size="10" fill="{text_col}">'
+                        f"{utils.escape_xml(lab)}</text>"
+                    )
+
+    def heat_colorbar(self, c0: str, c1: str, vmin: float, vmax: float) -> None:
+        """Vertical colorbar legend at the right side of the plot area."""
+        t = self.theme
+        x = self.margin["left"] + self.plot_w + 12
+        top = self.margin["top"]
+        h = self.plot_h
+        steps = 24
+        for s in range(steps):
+            col = utils.interp_color(c0, c1, s / max(steps - 1, 1))
+            y = top + h * s / steps
+            self._parts.append(
+                f'<rect x="{x:.2f}" y="{y:.2f}" width="14" height="{h / steps + 0.5:.2f}" fill="{col}"/>'
+            )
+        self._parts.append(
+            f'<rect x="{x:.2f}" y="{top:.2f}" width="14" height="{h:.2f}" '
+            f'fill="none" stroke="{t["grid"]}" stroke-width="1"/>'
+        )
+        self._parts.append(
+            f'<text x="{x + 7:.2f}" y="{top - 4:.2f}" text-anchor="middle" '
+            f'font-family="{t["font"]}" font-size="9" fill="{t["muted"]}">'
+            f"{utils.escape_xml(utils.format_number(vmax))}</text>"
+        )
+        self._parts.append(
+            f'<text x="{x + 7:.2f}" y="{top + h + 12:.2f}" text-anchor="middle" '
+            f'font-family="{t["font"]}" font-size="9" fill="{t["muted"]}">'
+            f"{utils.escape_xml(utils.format_number(vmin))}</text>"
         )
 
     def bars_stacked(

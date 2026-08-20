@@ -58,6 +58,38 @@ COLORS = {
         "#fdba74",
         "#fde047",
     ],
+    "forest": [
+        "#166534",
+        "#15803d",
+        "#16a34a",
+        "#4ade80",
+        "#a7f3d0",
+        "#65a30d",
+    ],
+    "candy": [
+        "#f472b6",
+        "#fb7185",
+        "#fbbf24",
+        "#a3e635",
+        "#34d399",
+        "#22d3ee",
+    ],
+    "blues": [
+        "#93c5fd",
+        "#60a5fa",
+        "#3b82f6",
+        "#2563eb",
+        "#1d4ed8",
+        "#1e40af",
+    ],
+    "reds": [
+        "#fca5a5",
+        "#f87171",
+        "#ef4444",
+        "#dc2626",
+        "#b91c1c",
+        "#991b1b",
+    ],
 }
 
 THEMES = {
@@ -102,6 +134,27 @@ THEMES = {
         "palette": "sunset",
     },
 }
+
+# gradient colormaps for heatmaps: name → (light, dark) hex endpoints
+HEATMAPS = {
+    "blues": ("#eff6ff", "#1d4ed8"),
+    "greens": ("#f0fdf4", "#15803d"),
+    "reds": ("#fef2f2", "#b91c1c"),
+    "oranges": ("#fff7ed", "#c2410c"),
+    "purples": ("#faf5ff", "#7e22ce"),
+    "cool": ("#ecfeff", "#0e7490"),
+    "warm": ("#fffbeb", "#b45309"),
+    "gray": ("#f8fafc", "#334155"),
+    "viridis": ("#fde725", "#440154"),
+}
+
+
+def get_heatmap(name: str | None = None) -> tuple[str, str]:
+    """Return a (light, dark) gradient endpoint pair for heatmaps."""
+    if name is None:
+        name = "blues"
+    return HEATMAPS.get(str(name).lower(), HEATMAPS["blues"])
+
 
 _active_theme: str = "light"
 _THEME_CACHE: dict[str, dict] = {k: dict(v) for k, v in THEMES.items()}

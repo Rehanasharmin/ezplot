@@ -124,6 +124,51 @@ def main() -> None:
     ez.line([1, 2, 3, 4, 5], [2, 5, 3, 8, 7], t="SVG export", save=str(OUT / "13_export.svg"))
     ez.bar([3, 1, 4], t="HTML export", save=str(OUT / "14_export.html"))
 
+    # ---- 1.6 new features -------------------------------------------------
+
+    (
+        ez.heatmap(
+            [[random.uniform(0, 1) for _ in range(8)] for _ in range(6)],
+            row_labels=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+            col_labels=[f"h{i}" for i in range(8)],
+        )
+        .t("Hourly heat")
+        .save(OUT / "15_heatmap.png")
+    )
+
+    ez.boxplot(
+        {
+            "A": [random.gauss(10, 2) for _ in range(60)],
+            "B": [random.gauss(14, 3) for _ in range(60)],
+            "C": [random.gauss(12, 4) for _ in range(60)],
+        },
+        t="Boxplot + outliers",
+        save=str(OUT / "16_boxplot.png"),
+    )
+
+    (
+        ez.step([0, 1, 2, 3, 4, 5], [0, 2, 1, 3, 4, 2])
+        .t("Step chart")
+        .save(OUT / "17_step.png")
+    )
+
+    (
+        ez.line([1, 2, 3, 4, 5, 6, 7], [2, 4, 8, 16, 32, 64, 128])
+        .logy()
+        .t("Log scale")
+        .save(OUT / "18_log.png")
+    )
+
+    (
+        ez.scatter(xs, ys)
+        .t("Trend + errors")
+        .trend()
+        .yerr(1.0)
+        .save(OUT / "19_trend_errors.png")
+    )
+
+    ez.fn(lambda x: math.sin(x) * 10, 0, 12, t="ez.fn(sin)", save=str(OUT / "20_fn.png"))
+
     print("Done. Files:")
     for p in sorted(OUT.iterdir()):
         print(f"  {p.name:24} {p.stat().st_size:7d} bytes")

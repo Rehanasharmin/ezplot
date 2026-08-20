@@ -17,9 +17,28 @@ ez.bar({"A": 10, "B": 25}, t="Sales", save="sales.jpg")
 
 ---
 
-## New Release Showcase (v1.5.0)
+## New Release Showcase (v1.6.0)
 
-Explore the incredible new power of `ezplot`! We now feature a fully automated and intelligent **Datetime Axis**, along with **Infinite Customizability** via post-render primitive overlays or custom user series rendering.
+`ezplot` now ships **7 new chart types**, **working log scales**, **trend lines, smoothing & error bars**, and an even smarter one-liner syntax:
+
+```python
+ez.heatmap(matrix, row_labels=days, col_labels=hours, save="heat.png")   # heatmap + colorbar
+ez.boxplot({"A": a, "B": b, "C": c}, t="Boxes", save="box.png")          # Tukey whiskers + outliers
+ez.step(x, y, t="Steps", save="s.png")                                   # step chart
+ez.fn(lambda x: x**2, -5, 5, t="x²", save="f.png")                       # plot any callable
+
+ez.line(x, y, logy=True, save="log.png")                # real log axes (ticks at decades)
+ez.scatter(x, y).trend().yerr(errs).save("fit.png")     # regression line + error bars
+ez.line(x, y1, y2, y3)                                  # multi-series, index detected
+```
+
+| Heatmap | Boxplot | Step | Log scale |
+|:--:|:--:|:--:|:--:|
+| <img src="docs/heatmap.png" alt="heatmap" width="180"/> | <img src="docs/boxplot.png" alt="boxplot" width="180"/> | <img src="docs/step.png" alt="step" width="180"/> | <img src="docs/log.png" alt="log" width="180"/> |
+| Trend line | Function plot | Error bars | Datetime Axis |
+| <img src="docs/trend.png" alt="trend" width="180"/> | <img src="docs/fn.png" alt="fn" width="180"/> | <img src="docs/errors.png" alt="errors" width="180"/> | <img src="docs/showcase_datetime.png" alt="datetime axis" width="180"/> |
+
+Still here from 1.5.0: the **Datetime Axis** and **Infinite Customizability** via post-render primitive overlays / custom series rendering:
 
 | Smart Datetime Axis | Infinite Custom Drawing Overlays |
 |:--:|:--:|
@@ -74,8 +93,17 @@ ez.line([1, 3, 2, 5], t="Hi", c="coral", save="hi.png")
 ez.bar({"Mon": 12, "Tue": 19}, t="Visitors", save="v.jpg")
 ez.pie({"A": 40, "B": 60}, donut=True, save="pie.png")
 ez.hist(samples, 20, t="Dist", save="hist.png")
-ez.auto(data, save="chart.png")          # picks chart type
+ez.auto(data, save="chart.png")          # picks chart type (incl. heatmap!)
 ez.quick([1, 2, 3, 5])                   # auto + show
+
+# 1.6 chart types
+ez.step(x, y, save="step.png")
+ez.boxplot(data, labels=["A", "B"], save="box.png")
+ez.heatmap(matrix, row_labels=rows, col_labels=cols, save="heat.png")
+ez.function(lambda x: x**2, -5, 5, save="f.png")
+ez.barh(cats, vals, values=True)         # horizontal bars
+ez.donut({"A": 40, "B": 60})             # donut shortcut
+ez.chart(anything)                       # alias for ez.auto
 
 # fluent
 (
@@ -87,6 +115,10 @@ ez.quick([1, 2, 3, 5])                   # auto + show
     .axhspan(80, 120, color="#22c55e", alpha=0.15)  # target zone (background)
     .hline(100, color="#fbbf24")                    # target line
     .annotate(6, y1[6], "launch")
+    .trend(color="#f43f5e", label="projection")     # linear regression overlay
+    .yerr(5)                                        # error bars (scalar or list)
+    .smooth(3)                                      # centered moving average
+    .xrot(45)                                       # rotate x tick labels
     .legend_pos("top-left")
     .footnote("Source: finance")
     .dpi(2)                                         # retina PNG
@@ -174,6 +206,14 @@ p.save("custom_chart.png")
 | `s=` | point size |
 | `hbar=True` / `.horizontal()` | horizontal bars |
 | `stacked=True` / `.stacked()` | stacked bars |
+| `logy=True` / `.logy()`, `logx=` | log scale (decade ticks) |
+| `trend=True` / `.trend()` | regression trend line |
+| `yerr=` / `.yerr()`, `xerr=` | error bars |
+| `smooth=` / `.smooth()` | moving-average smoothing |
+| `step=True` / `.step()` | step rendering |
+| `sort=True` / `.sort()` | bars sorted by value |
+| `xrot=45` / `.xrot()` | rotate x tick labels |
+| `values=True` / `.values()` | bar labels (`.values("{:.1f}")` for a format) |
 | `save="f.png"` | write by extension |
 | `.png()` / `.jpg()` | explicit helpers |
 
@@ -224,7 +264,9 @@ ez.set_theme("dark")   # global
 ez.line(y, theme="paper", palette="sunset", save="x.png")
 ```
 
-**Palettes:** `default` · `pastel` · `dark` · `mono` · `ocean` · `sunset`
+**Palettes:** `default` · `pastel` · `dark` · `mono` · `ocean` · `sunset` · `forest` · `candy` · `blues` · `reds`
+
+**Heatmap colormaps:** `blues` · `greens` · `reds` · `oranges` · `purples` · `cool` · `warm` · `gray` · `viridis`
 
 ---
 
@@ -260,7 +302,15 @@ ez.scatter([(1, 2), (3, 1), (4, 5)]) # pairs
 ez.line({"A": [1, 2], "B": [2, 1]})  # named series
 ez.bar(["cat", "dog", "cat"])        # frequency count
 ez.line([1, None, 4, 5])             # NaN gaps OK
-ez.auto(anything)                    # pick the chart
+ez.line(y1, y2, y3)                  # multi-series, shared index
+ez.line(x, y1, y2)                   # index-like first arg → x axis
+ez.bar(["A", "B"], s1, s2)           # positional grouped series
+ez.line(df)                          # pandas DataFrame → named series
+ez.auto(anything)                    # pick the chart (incl. 2D matrix → heatmap)
+
+# datetimes work everywhere: data, ticks, limits, reference lines
+ez.line(dates, values)
+ez.line(dates, values).xlim(d1, d2).vline(launch_date).xticks([d1, d2])
 ```
 
 ---
@@ -285,8 +335,9 @@ Typical PNG render: **~5–15 ms** for common charts (pure Python).
 git clone https://github.com/Rehanasharmin/ezplot.git
 cd ezplot
 pip install -e ".[dev,images]"
-python tests/test_basic.py
+python -m pytest tests/          # or: python tests/test_basic.py tests/test_features.py
 python examples/demo.py          # writes examples/out/*.png
+python generate_docs_showcases.py  # regenerates docs/*.png gallery
 ```
 
 ## Project layout

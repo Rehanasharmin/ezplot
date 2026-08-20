@@ -623,7 +623,7 @@ class RasterRenderer:
         "width", "height", "theme", "margin", "cv",
         "_bg", "_fg", "_grid", "_axis", "_title_c", "_muted",
         "_ml", "_mt", "_pw", "_ph", "x0", "x1", "y0", "y1",
-        "font_scale",
+        "font_scale", "_logx", "_logy",
     )
 
     def __init__(self, width: int = 720, height: int = 420, theme: str | None = None, font_scale: float = 1.0):
@@ -648,6 +648,8 @@ class RasterRenderer:
         self.x1 = 1.0
         self.y0 = 0.0
         self.y1 = 1.0
+        self._logx = False
+        self._logy = False
 
     def _sync_geom(self) -> None:
         self._ml = self.margin["left"]
@@ -664,11 +666,19 @@ class RasterRenderer:
         return max(10.0, self.height - self.margin["top"] - self.margin["bottom"])
 
     def _sx(self, x: float, x0: float, x1: float) -> float:
+        if self._logx:
+            if x <= 0 or x0 <= 0 or x1 <= 0 or x1 == x0:
+                return self._ml + self._pw * 0.5
+            return self._ml + (math.log10(x) - math.log10(x0)) / (math.log10(x1) - math.log10(x0)) * self._pw
         if x1 == x0 or not math.isfinite(x):
             return self._ml + self._pw * 0.5
         return self._ml + (x - x0) / (x1 - x0) * self._pw
 
     def _sy(self, y: float, y0: float, y1: float) -> float:
+        if self._logy:
+            if y <= 0 or y0 <= 0 or y1 <= 0 or y1 == y0:
+                return self._mt + self._ph * 0.5
+            return self._mt + (1.0 - (math.log10(y) - math.log10(y0)) / (math.log10(y1) - math.log10(y0))) * self._ph
         if y1 == y0 or not math.isfinite(y):
             return self._mt + self._ph * 0.5
         return self._mt + (1.0 - (y - y0) / (y1 - y0)) * self._ph
@@ -713,17 +723,40 @@ class RasterRenderer:
         yticks: list[float] | None = None,
         xlabels: list[str] | None = None,
         categorical_x: bool = False,
+        rotate_x: bool | float = False,
+        log_x: bool = False,
+        log_y: bool = False,
+        datetime_x: bool = False,
     ) -> None:
         self.x0 = x0
         self.x1 = x1
         self.y0 = y0
         self.y1 = y1
+        self._logx = bool(log_x)
+        self._logy = bool(log_y)
         self._sync_geom()
-        xt = xticks if xticks is not None else utils.nice_ticks(x0, x1)
-        yt = yticks if yticks is not None else utils.nice_ticks(y0, y1)
-        yt = [v for v in yt if y0 - 1e-12 <= v <= y1 + 1e-12] or [y0, y1]
+        if log_x:
+            xt = xticks if xticks is not None else utils.log_ticks(x0, x1)
+        else:
+            xt = xticks if xticks is not None else utils.nice_ticks(x0, x1)
+        if log_y:
+            yt = yticks if yticks is not None else utils.log_ticks(y0, y1)
+        else:
+            yt = yticks if yticks is not None else utils.nice_ticks(y0, y1)
+
+        def _in(v: float, lo: float, hi: float) -> bool:
+            return lo - 1e-12 <= v <= hi + 1e-12
+
+        # explicit tick lists (possibly empty) are honored exactly
+        if yticks is not None:
+            yt = [v for v in yt if _in(v, y0, y1)]
+        else:
+            yt = [v for v in yt if _in(v, y0, y1)] or [y0, y1]
         if not categorical_x:
-            xt = [v for v in xt if x0 - 1e-12 <= v <= x1 + 1e-12] or [x0, x1]
+            if xticks is not None:
+                xt = [v for v in xt if _in(v, x0, x1)]
+            else:
+                xt = [v for v in xt if _in(v, x0, x1)] or [x0, x1]
 
         left = int(self._ml)
         top = int(self._mt)
@@ -748,19 +781,35 @@ class RasterRenderer:
             self.cv.hline(left - 4, left, sy, self._axis)
             self.cv.text(left - 8, sy - 3, utils.format_number(y), self._muted, scale=1, align="end")
 
+        # x tick label rotation: explicit angle → vertical labels
+        if rotate_x not in (None, False):
+            do_rotate = True
+        else:
+            do_rotate = False
+        is_datetime_x = bool(datetime_x) or (x0 > 1e8 and x1 > 1e8 and (x1 - x0) < 1e11)
+
         if categorical_x and xlabels is not None:
             n = len(xlabels)
+            max_len = max((len(str(l)) for l in xlabels), default=0)
+            do_rotate = do_rotate or n > 8 or max_len > 10
             for i, lab in enumerate(xlabels):
                 sx = self._sx(i + 0.5, 0, n) if n else left
                 self.cv.vline(int(sx), bottom, bottom + 4, self._axis)
-                self.cv.text(sx, bottom + 8, utils.truncate_label(str(lab), 12), self._muted, scale=1, align="center")
+                shown = utils.truncate_label(str(lab), 12)
+                if do_rotate:
+                    self.cv.text_rotated(sx - 2, bottom + 10, shown, self._muted, scale=1, align="center")
+                else:
+                    self.cv.text(sx, bottom + 8, shown, self._muted, scale=1, align="center")
         else:
-            is_datetime_x = (x0 > 1e8 and x1 > 1e8 and (x1 - x0) < 1e11)
+            do_rotate = do_rotate or is_datetime_x or len(xt) > 6
             for x in xt:
                 sx = int(self._sx(x, x0, x1) + 0.5)
                 self.cv.vline(sx, bottom, bottom + 4, self._axis)
                 label_text = utils.format_datetime_tick(x, x1 - x0) if is_datetime_x else utils.format_number(x)
-                self.cv.text(sx, bottom + 8, label_text, self._muted, scale=1, align="center")
+                if do_rotate:
+                    self.cv.text_rotated(sx - 2, bottom + 10, label_text, self._muted, scale=1, align="center")
+                else:
+                    self.cv.text(sx, bottom + 8, label_text, self._muted, scale=1, align="center")
 
     def legend(self, items: list[tuple[str, str]], kind: str = "line",
                pos: str = "top-right") -> None:
@@ -795,7 +844,7 @@ class RasterRenderer:
                 self.cv.dot(bx + 15, iy, 2.5, col)
             self.cv.text(bx + 28, iy - 3, lab, self._fg, scale=1)
 
-    def line_series(self, xs, ys, x0, x1, y0, y1, color, width=2.5, markers=True):
+    def line_series(self, xs, ys, x0, x1, y0, y1, color, width=2.5, markers=True, dashed=False, step=False):
         self._sync_geom()
         col = parse_color(color)
         segs: list[list[tuple[float, float]]] = [[]]
@@ -818,7 +867,16 @@ class RasterRenderer:
                 self.cv.dot(pts[0][0], pts[0][1], 3.5, col)
                 all_pts.extend(pts)
             elif len(pts) >= 2:
-                self.cv.polyline(pts, col, width=width)
+                if step:
+                    stepped: list[tuple[float, float]] = [pts[0]]
+                    for (px, py), (nx, _ny) in zip(pts, pts[1:]):
+                        stepped.append((nx, py))
+                        stepped.append((nx, _ny))
+                    pts = stepped
+                if dashed:
+                    self._dashed_polyline(pts, col, width)
+                else:
+                    self.cv.polyline(pts, col, width=width)
                 all_pts.extend(pts)
         if markers and 0 < len(all_pts) <= 80:
             bg = self._bg
@@ -826,21 +884,52 @@ class RasterRenderer:
                 self.cv.dot(px, py, 3.0, col)
                 self.cv.dot(px, py, 1.4, bg)
 
+    def _dashed_polyline(self, pts, col, width, a=1.0, dash=6.0, gap=5.0):
+        """Draw a polyline with dash/gap pattern (pixel space)."""
+        for i in range(len(pts) - 1):
+            x0, y0 = pts[i]
+            x1, y1 = pts[i + 1]
+            dist = math.hypot(x1 - x0, y1 - y0)
+            if dist < 1e-6:
+                continue
+            period = dash + gap
+            n = int(dist // period) + 1
+            for s in range(n):
+                t0 = min(1.0, s * period / dist)
+                t1 = min(1.0, (s * period + dash) / dist)
+                if t0 >= t1:
+                    break
+                self.cv.line(
+                    x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0,
+                    x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1,
+                    col, width=width, a=a,
+                )
+
     def area_series(self, xs, ys, x0, x1, y0, y1, color, opacity=0.25):
         self._sync_geom()
         col = parse_color(color)
-        pts = []
+        segs: list[list[tuple[float, float]]] = [[]]
         sx, sy = self._sx, self._sy
         for x, y in zip(xs, ys):
             if isinstance(x, (int, float)) and isinstance(y, (int, float)):
                 fx, fy = float(x), float(y)
                 if math.isfinite(fx) and math.isfinite(fy):
-                    pts.append((sx(fx, x0, x1), sy(fy, y0, y1)))
-        if len(pts) < 2:
-            return
+                    segs[-1].append((sx(fx, x0, x1), sy(fy, y0, y1)))
+                else:
+                    if segs[-1]:
+                        segs.append([])
+            else:
+                if segs[-1]:
+                    segs.append([])
         base = sy(0.0 if y0 <= 0 <= y1 else y0, y0, y1)
-        self.cv.fill_poly(pts + [(pts[-1][0], base), (pts[0][0], base)], col, a=opacity)
-        self.line_series(xs, ys, x0, x1, y0, y1, color, width=2, markers=False)
+        drew = False
+        for pts in segs:
+            if len(pts) < 2:
+                continue
+            self.cv.fill_poly(pts + [(pts[-1][0], base), (pts[0][0], base)], col, a=opacity)
+            drew = True
+        if drew:
+            self.line_series(xs, ys, x0, x1, y0, y1, color, width=2, markers=False)
 
     def scatter_series(self, xs, ys, x0, x1, y0, y1, color, size=5, alpha=0.85):
         self._sync_geom()
@@ -852,7 +941,7 @@ class RasterRenderer:
                 if math.isfinite(fx) and math.isfinite(fy):
                     self.cv.dot(sx(fx, x0, x1), sy(fy, y0, y1), size, col, a=alpha)
 
-    def bars_v(self, n, values, y0, y1, colors, gap=0.28, group=0, n_groups=1, show_values=False):
+    def bars_v(self, n, values, y0, y1, colors, gap=0.28, group=0, n_groups=1, show_values=False, value_fmt=None):
         if n <= 0:
             return
         self._sync_geom()
@@ -885,9 +974,10 @@ class RasterRenderer:
             self.cv.rect(x, top, bar_w, h, col, radius=3)
             if show_values and bar_w >= 14:
                 ty = top - 10 if fv >= base_val else top + h + 2
-                self.cv.text(x + bar_w * 0.5, ty, utils.format_number(fv), self._muted, scale=1, align="center")
+                lab = value_fmt.format(fv) if value_fmt else utils.format_number(fv)
+                self.cv.text(x + bar_w * 0.5, ty, lab, self._muted, scale=1, align="center")
 
-    def bars_h(self, n, values, x0, x1, colors, categories, gap=0.28):
+    def bars_h(self, n, values, x0, x1, colors, categories, gap=0.28, show_values=False, value_fmt=None):
         if n <= 0:
             return
         self._sync_geom()
@@ -912,6 +1002,11 @@ class RasterRenderer:
             self.cv.rect(left, y, w, bar_h, col, radius=3)
             lab = utils.truncate_label(categories[i] if i < len(categories) else str(i), 12)
             self.cv.text(self._ml - 8, y + bar_h * 0.5 - 3, lab, self._muted, scale=1, align="end")
+            if show_values and bar_h >= 12:
+                vlab = value_fmt.format(fv) if value_fmt else utils.format_number(fv)
+                align = "left" if fv >= base_val else "end"
+                vx = x_end + 4 if fv >= base_val else x_end - 4
+                self.cv.text(vx, y + bar_h * 0.5 - 3, vlab, self._muted, scale=1, align=align)
 
 
     def subtitle(self, text: str) -> None:
@@ -929,11 +1024,15 @@ class RasterRenderer:
         col = _pc(color)
         sy = int(self._sy(float(y), y0, y1) + 0.5)
         left, right = int(self._ml), int(self._ml + self._pw)
+        half = max(0, int(width // 2))
+        rows = range(sy - half, sy + half + 1)
         if dashed:
-            for x in range(left, right, 8):
-                self.cv.hline(x, min(x + 4, right), sy, col)
+            for yy in rows:
+                for x in range(left, right, 8):
+                    self.cv.hline(x, min(x + 4, right), yy, col)
         else:
-            self.cv.hline(left, right, sy, col)
+            for yy in rows:
+                self.cv.hline(left, right, yy, col)
 
     def vline(self, x, x0, x1, color, dashed=True, width=1.5):
         self._sync_geom()
@@ -941,20 +1040,27 @@ class RasterRenderer:
         col = _pc(color)
         sx = int(self._sx(float(x), x0, x1) + 0.5)
         top, bot = int(self._mt), int(self._mt + self._ph)
+        half = max(0, int(width // 2))
+        cols = range(sx - half, sx + half + 1)
         if dashed:
-            for y in range(top, bot, 8):
-                self.cv.vline(sx, y, min(y + 4, bot), col)
+            for xx in cols:
+                for y in range(top, bot, 8):
+                    self.cv.vline(xx, y, min(y + 4, bot), col)
         else:
-            self.cv.vline(sx, top, bot, col)
+            for xx in cols:
+                self.cv.vline(xx, top, bot, col)
 
-    def annotate(self, x, y, x0, x1, y0, y1, text, color=None, anchor="start"):
+    def annotate(self, x, y, x0, x1, y0, y1, text, color=None, anchor="start", size=11):
         self._sync_geom()
         from .raster import parse_color as _pc
         col = _pc(color or self.theme.get("fg"))
         sx, sy = self._sx(float(x), x0, x1), self._sy(float(y), y0, y1)
         self.cv.dot(sx, sy, 3, col)
         align = "left" if anchor in ("start", "left") else ("end" if anchor in ("end", "right") else "center")
-        self.cv.text(sx + 6, sy - 8, str(text), col, scale=1, align=align)
+        dx = {"left": 6, "center": 0, "end": -6, "right": -6}[align]
+        scale_fac = getattr(self, "font_scale", 1.0)
+        scale = max(1, int(round(size / 11 * scale_fac)))
+        self.cv.text(sx + dx, sy - 8, str(text), col, scale=scale, align=align)
 
     def bars_stacked(self, n, series_values, y0, y1, colors, gap=0.28):
         if n <= 0 or not series_values:
@@ -1030,6 +1136,97 @@ class RasterRenderer:
     def to_pixels(self, x: float, y: float) -> tuple[float, float]:
         """Convert data coordinates to pixel/pixel-relative coordinates."""
         return self._sx(x, self.x0, self.x1), self._sy(y, self.y0, self.y1)
+
+    def boxplot(self, stats, v0, v1, colors, labels=None, horizontal=False, width=1.5):
+        self._sync_geom()
+        n = len(stats)
+        if n == 0:
+            return
+        from .raster import parse_color as _pc
+        if horizontal:
+            band = self._ph / n
+            for i, b in enumerate(stats):
+                col = _pc(colors[i % len(colors)])
+                cy = self._mt + (i + 0.5) * band
+                h = max(4.0, band * 0.5)
+                q1x, q3x = self._sx(b["q1"], v0, v1), self._sx(b["q3"], v0, v1)
+                mx = self._sx(b["med"], v0, v1)
+                lox, hix = self._sx(b["lo"], v0, v1), self._sx(b["hi"], v0, v1)
+                x = min(q1x, q3x)
+                w = abs(q3x - q1x)
+                self.cv.rect(x, cy - h / 2, w, h, col, a=0.35, radius=2)
+                self.cv.line(lox, cy, q1x, cy, col, width=width)
+                self.cv.line(q3x, cy, hix, cy, col, width=width)
+                self.cv.line(lox, cy - h / 2, lox, cy + h / 2, col, width=width)
+                self.cv.line(hix, cy - h / 2, hix, cy + h / 2, col, width=width)
+                self.cv.line(mx, cy - h / 2, mx, cy + h / 2, self._fg, width=width + 0.5)
+                for out in b.get("outliers") or []:
+                    ox = self._sx(out, v0, v1)
+                    self.cv.dot(ox, cy, 3, col)
+                if labels:
+                    lab = utils.truncate_label(labels[i] if i < len(labels) else str(i + 1), 12)
+                    self.cv.text(self._ml - 8, cy - 3, lab, self._muted, scale=1, align="end")
+        else:
+            band = self._pw / n
+            for i, b in enumerate(stats):
+                col = _pc(colors[i % len(colors)])
+                cx = self._ml + (i + 0.5) * band
+                w = max(4.0, band * 0.5)
+                q1y, q3y = self._sy(b["q1"], v0, v1), self._sy(b["q3"], v0, v1)
+                my = self._sy(b["med"], v0, v1)
+                loy, hiy = self._sy(b["lo"], v0, v1), self._sy(b["hi"], v0, v1)
+                y = min(q1y, q3y)
+                h = abs(q3y - q1y)
+                self.cv.rect(cx - w / 2, y, w, h, col, a=0.35, radius=2)
+                self.cv.line(cx, loy, cx, q1y, col, width=width)
+                self.cv.line(cx, q3y, cx, hiy, col, width=width)
+                self.cv.line(cx - w / 2, loy, cx + w / 2, loy, col, width=width)
+                self.cv.line(cx - w / 2, hiy, cx + w / 2, hiy, col, width=width)
+                self.cv.line(cx - w / 2, my, cx + w / 2, my, self._fg, width=width + 0.5)
+                for out in b.get("outliers") or []:
+                    oy = self._sy(out, v0, v1)
+                    self.cv.dot(cx, oy, 3, col)
+
+    def heatmap(self, matrix, colors, nan_color, show_values=True, value_fmt=None):
+        self._sync_geom()
+        rows = len(matrix)
+        if rows == 0:
+            self.empty_message("No data")
+            return
+        cols = max(len(r) for r in matrix)
+        cell_w = self._pw / cols
+        cell_h = self._ph / rows
+        nan_rgb = parse_color(nan_color)
+        left = self._ml
+        top = self._mt
+        for i, row in enumerate(matrix):
+            for j, v in enumerate(row):
+                if v is None:
+                    col = nan_rgb
+                else:
+                    col = parse_color(colors[i][j])
+                self.cv.rect(left + j * cell_w, top + i * cell_h, cell_w + 0.5, cell_h + 0.5, col)
+                if show_values and v is not None and cell_w >= 40 and cell_h >= 16:
+                    lab = value_fmt.format(v) if value_fmt else utils.format_number(v)
+                    self.cv.text(left + (j + 0.5) * cell_w, top + (i + 0.5) * cell_h - 3, lab, self._fg, scale=1, align="center")
+
+    def heat_colorbar(self, c0, c1, vmin, vmax):
+        self._sync_geom()
+        x = self._ml + self._pw + 12
+        top = self._mt
+        h = self._ph
+        steps = 24
+        for s in range(steps):
+            col = parse_color(utils.interp_color(c0, c1, s / max(steps - 1, 1)))
+            y = top + h * s / steps
+            self.cv.rect(x, y, 14, h / steps + 0.5, col)
+        # outline
+        self.cv.hline(x, x + 14, top, self._grid)
+        self.cv.hline(x, x + 14, top + h, self._grid)
+        self.cv.vline(x, top, top + h, self._grid)
+        self.cv.vline(x + 14, top, top + h, self._grid)
+        self.cv.text(x + 7, top - 4, utils.format_number(vmax), self._muted, scale=1, align="center")
+        self.cv.text(x + 7, top + h + 10, utils.format_number(vmin), self._muted, scale=1, align="center")
 
     def draw_line(self, x1: float, y1: float, x2: float, y2: float, color: str, width: float = 1.5, dashed: bool = False, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw a primitive line. By default uses data coordinates unless raw_coords=True."""
