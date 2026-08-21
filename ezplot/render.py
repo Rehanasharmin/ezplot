@@ -163,6 +163,9 @@ class SVGRenderer:
         log_x: bool = False,
         log_y: bool = False,
         datetime_x: bool = False,
+        categorical_center: bool = True,
+        xaxis_at: float | None = None,
+        yaxis_at: float | None = None,
     ) -> None:
         self.x0 = x0
         self.x1 = x1
@@ -217,12 +220,22 @@ class SVGRenderer:
 
         bottom = self.margin["top"] + self.plot_h
         left = self.margin["left"]
+        # axis lines normally hug the plot edges; bar charts may anchor them
+        # at the zero line instead so the bars visually connect to the axes
+        if xaxis_at is not None and y0 <= xaxis_at <= y1:
+            xaxis_y = self._sy(xaxis_at, y0, y1)
+        else:
+            xaxis_y = bottom
+        if yaxis_at is not None and x0 <= yaxis_at <= x1:
+            yaxis_x = self._sx(yaxis_at, x0, x1)
+        else:
+            yaxis_x = left
         self._parts.append(
-            f'<line x1="{left}" y1="{bottom}" x2="{left + self.plot_w}" y2="{bottom}" '
+            f'<line x1="{left}" y1="{xaxis_y:.2f}" x2="{left + self.plot_w}" y2="{xaxis_y:.2f}" '
             f'stroke="{t["axis"]}" stroke-width="1.5"/>'
         )
         self._parts.append(
-            f'<line x1="{left}" y1="{self.margin["top"]}" x2="{left}" y2="{bottom}" '
+            f'<line x1="{yaxis_x:.2f}" y1="{self.margin["top"]}" x2="{yaxis_x:.2f}" y2="{bottom}" '
             f'stroke="{t["axis"]}" stroke-width="1.5"/>'
         )
 
@@ -257,7 +270,10 @@ class SVGRenderer:
             max_len = max((len(str(l)) for l in xlabels), default=0)
             do_rotate = do_rotate or n > 8 or max_len > 10
             for i, lab in enumerate(xlabels):
-                sx = self._sx(i + 0.5, 0, n) if n else left
+                # bars/boxes are drawn at band centers; line/scatter points
+                # sit on the band boundaries → ticks must match
+                pos = i + 0.5 if categorical_center else i
+                sx = self._sx(pos, 0, n) if n else left
                 self._parts.append(
                     f'<line x1="{sx:.2f}" y1="{bottom}" x2="{sx:.2f}" y2="{bottom + 4}" '
                     f'stroke="{t["axis"]}" stroke-width="1"/>'
@@ -412,20 +428,45 @@ class SVGRenderer:
                 )
             seg.clear()
 
+        # fast linear mapping (covers the common non-log case); falls back to
+        # the general _sx/_sy for log axes or degenerate ranges
+        linear = (
+            not self._logx
+            and not self._logy
+            and x1 != x0
+            and y1 != y0
+            and math.isfinite(x0)
+            and math.isfinite(x1)
+            and math.isfinite(y0)
+            and math.isfinite(y1)
+        )
+        if linear:
+            left = self.margin["left"]
+            xsc = self.plot_w / (x1 - x0)
+            ysc = -self.plot_h / (y1 - y0)
+            yconst = self.margin["top"] + self.plot_h
+        append = seg.append
+        isfinite = math.isfinite
+
         for x, y in zip(xs, ys):
-            if (
-                not isinstance(x, (int, float))
-                or not isinstance(y, (int, float))
-                or not math.isfinite(float(x))
-                or not math.isfinite(float(y))
-            ):
+            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
                 flush()
                 continue
-            cx, cy = self._sx(float(x), x0, x1), self._sy(float(y), y0, y1)
+            fx = float(x)
+            fy = float(y)
+            if not isfinite(fx) or not isfinite(fy):
+                flush()
+                continue
+            if linear:
+                cx = left + (fx - x0) * xsc
+                cy = yconst + (fy - y0) * ysc
+            else:
+                cx = self._sx(fx, x0, x1)
+                cy = self._sy(fy, y0, y1)
             if step and seg:
                 # post-step: hold y until the next x, then jump vertically
-                seg.append(f"{cx:.2f},{py:.2f}")
-            seg.append(f"{cx:.2f},{cy:.2f}")
+                append(f"{cx:.2f},{py:.2f}")
+            append(f"{cx:.2f},{cy:.2f}")
             px, py = cx, cy
             if marker_pts is not None:
                 if len(marker_pts) < limit:
@@ -496,16 +537,38 @@ class SVGRenderer:
     ) -> None:
         size = max(0.5, float(size))
         alpha = min(1.0, max(0.0, float(alpha)))
+        # fast linear mapping (falls back to _sx/_sy for log/degenerate ranges)
+        linear = (
+            not self._logx
+            and not self._logy
+            and x1 != x0
+            and y1 != y0
+            and math.isfinite(x0)
+            and math.isfinite(x1)
+            and math.isfinite(y0)
+            and math.isfinite(y1)
+        )
+        if linear:
+            left = self.margin["left"]
+            xsc = self.plot_w / (x1 - x0)
+            ysc = -self.plot_h / (y1 - y0)
+            yconst = self.margin["top"] + self.plot_h
+        isfinite = math.isfinite
+        append = self._parts.append
         for x, y in zip(xs, ys):
-            if (
-                not isinstance(x, (int, float))
-                or not isinstance(y, (int, float))
-                or not math.isfinite(float(x))
-                or not math.isfinite(float(y))
-            ):
+            if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
                 continue
-            sx, sy = self._sx(float(x), x0, x1), self._sy(float(y), y0, y1)
-            self._parts.append(
+            fx = float(x)
+            fy = float(y)
+            if not isfinite(fx) or not isfinite(fy):
+                continue
+            if linear:
+                sx = left + (fx - x0) * xsc
+                sy = yconst + (fy - y0) * ysc
+            else:
+                sx = self._sx(fx, x0, x1)
+                sy = self._sy(fy, y0, y1)
+            append(
                 f'<circle cx="{sx:.2f}" cy="{sy:.2f}" r="{size}" fill="{color}" '
                 f'fill-opacity="{alpha}" clip-path="url(#{self._clip_id})"/>'
             )

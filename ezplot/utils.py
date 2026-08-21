@@ -41,7 +41,7 @@ def as_list(data: Any) -> list:
 
 def is_datetime(v: Any) -> bool:
     """True for datetime.datetime / datetime.date / pandas Timestamp-like."""
-    if v is None or isinstance(v, bool):
+    if v is None or isinstance(v, (bool, int, float, str, bytes)):
         return False
     if hasattr(v, "timetuple") and (hasattr(v, "timestamp") or hasattr(v, "year")):
         return True
@@ -79,8 +79,21 @@ def to_float(v: Any) -> float | None:
     """Parse a value to float; return None if missing/invalid/non-finite."""
     if v is None:
         return None
+    # fast path: plain numbers (the overwhelmingly common case)
     if isinstance(v, bool):
         return float(int(v))
+    if isinstance(v, (int, float)):
+        f = float(v)
+        return f if math.isfinite(f) else None
+    if isinstance(v, str):
+        s = v.strip().replace(",", "")
+        if s == "" or s.lower() in {"nan", "none", "null", "na", "-"}:
+            return None
+        try:
+            f = float(s)
+            return f if math.isfinite(f) else None
+        except ValueError:
+            return None
     # Support datetime and date objects
     if hasattr(v, "timetuple") and hasattr(v, "timestamp"):
         try:
@@ -95,18 +108,6 @@ def to_float(v: Any) -> float | None:
             return float(dt.timestamp())
         except Exception:
             pass
-    if isinstance(v, (int, float)):
-        f = float(v)
-        return f if math.isfinite(f) else None
-    if isinstance(v, str):
-        s = v.strip().replace(",", "")
-        if s == "" or s.lower() in {"nan", "none", "null", "na", "-"}:
-            return None
-        try:
-            f = float(s)
-            return f if math.isfinite(f) else None
-        except ValueError:
-            return None
     try:
         f = float(v)
         return f if math.isfinite(f) else None
@@ -582,6 +583,37 @@ def data_range(
         d = abs(lo) * 0.1 if lo != 0 else 1.0
         return lo - d, hi + d
     span = hi - lo
+    return lo - span * pad, hi + span * pad
+
+
+def bar_range(
+    values: Sequence[float],
+    pad: float = 0.08,
+) -> tuple[float, float]:
+    """Min/max for bar charts, anchored at zero.
+
+    Unlike ``data_range(..., include_zero=True)`` this does **not** pad past
+    zero when every value is ≥ 0, so the bars meet the axis line exactly
+    instead of floating above it (the axis itself is drawn on the zero line
+    whenever zero lies inside the range):
+
+        [3, 7, 2]      → (0.0, 7.56)    # zero = bottom axis
+        [-3, -7, -2]   → (-7.56, 0.56)  # axis drawn at the zero line
+        [-3, 7]        → (-3.8, 7.8)    # axis drawn at the zero line
+    """
+    finite = [float(v) for v in values if isinstance(v, (int, float)) and math.isfinite(float(v))]
+    if not finite:
+        return 0.0, 1.0
+    lo = min(finite)
+    hi = max(finite)
+    lo = min(lo, 0.0)
+    hi = max(hi, 0.0)
+    if lo == hi:
+        d = abs(lo) * 0.1 if lo != 0 else 1.0
+        return lo - d, hi + d
+    span = hi - lo
+    if lo == 0:  # all values ≥ 0 → no padding below zero
+        return 0.0, hi + span * pad
     return lo - span * pad, hi + span * pad
 
 
