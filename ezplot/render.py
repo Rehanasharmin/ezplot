@@ -964,7 +964,8 @@ class SVGRenderer:
         bar_w = max(1.0, band * (1 - gap))
         left_pad = band * gap / 2
         for i in range(n):
-            base = 0.0 if y0 <= 0 <= y1 else y0
+            pos_base = 0.0
+            neg_base = 0.0
             for si, vals in enumerate(series_values):
                 if i >= len(vals):
                     continue
@@ -976,15 +977,20 @@ class SVGRenderer:
                     continue
                 color = colors[si % len(colors)]
                 x = self.margin["left"] + i * band + left_pad
-                y_top = self._sy(base + val, y0, y1)
-                y_bot = self._sy(base, y0, y1)
+                start = pos_base if val > 0 else neg_base
+                end = start + val
+                y_top = self._sy(end, y0, y1)
+                y_bot = self._sy(start, y0, y1)
                 top = min(y_top, y_bot)
                 h = max(abs(y_bot - y_top), 0.5)
                 self._parts.append(
                     f'<rect x="{x:.2f}" y="{top:.2f}" width="{bar_w:.2f}" height="{h:.2f}" '
                     f'rx="2" fill="{color}" clip-path="url(#{self._clip_id})"/>'
                 )
-                base += val
+                if val > 0:
+                    pos_base = end
+                else:
+                    neg_base = end
 
     def to_pixels(self, x: float, y: float) -> tuple[float, float]:
         """Convert data coordinates to pixel/pixel-relative coordinates."""
@@ -994,12 +1000,26 @@ class SVGRenderer:
         """Draw a primitive line. By default uses data coordinates unless raw_coords=True."""
         px1, py1 = (x1, y1) if raw_coords else self.to_pixels(x1, y1)
         px2, py2 = (x2, y2) if raw_coords else self.to_pixels(x2, y2)
+        if not raw_coords:
+            clipped = utils.clip_line_to_rect(
+                px1,
+                py1,
+                px2,
+                py2,
+                self.margin["left"],
+                self.margin["top"],
+                self.margin["left"] + self.plot_w,
+                self.margin["top"] + self.plot_h,
+            )
+            if clipped is None:
+                return
+            px1, py1, px2, py2 = clipped
         dash = ' stroke-dasharray="5,4"' if dashed else ""
+        clip_attr = '' if raw_coords else f' clip-path="url(#{self._clip_id})"'
         color_str, final_a = svg_color_alpha(color, opacity)
         self._parts.append(
             f'<line x1="{px1:.2f}" y1="{py1:.2f}" x2="{px2:.2f}" y2="{py2:.2f}" '
-            f'stroke="{color_str}" stroke-opacity="{final_a:.3f}" stroke-width="{width:.2f}"{dash} '
-            f'clip-path="url(#{self._clip_id})"/>'
+            f'stroke="{color_str}" stroke-opacity="{final_a:.3f}" stroke-width="{width:.2f}"{dash}{clip_attr}/>'
         )
 
     def draw_rect(self, x: float, y: float, w: float, h: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, radius: float = 0.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
@@ -1022,9 +1042,10 @@ class SVGRenderer:
         else:
             s_attr = ' stroke="none"'
         r_attr = f' rx="{radius:.2f}"' if radius > 0 else ""
+        clip_attr = '' if raw_coords else f' clip-path="url(#{self._clip_id})"'
         self._parts.append(
             f'<rect x="{px:.2f}" y="{py:.2f}" width="{pw:.2f}" height="{ph:.2f}"'
-            f'{r_attr} {f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
+            f'{r_attr} {f_attr}{s_attr}{clip_attr}/>'
         )
 
     def draw_circle(self, cx: float, cy: float, r: float, color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
@@ -1037,9 +1058,10 @@ class SVGRenderer:
             s_attr = f' stroke="{sc_str}" stroke-opacity="{sc_final_a:.3f}" stroke-width="{stroke_width:.2f}"'
         else:
             s_attr = ' stroke="none"'
+        clip_attr = '' if raw_coords else f' clip-path="url(#{self._clip_id})"'
         self._parts.append(
             f'<circle cx="{pcx:.2f}" cy="{pcy:.2f}" r="{r:.2f}" '
-            f'{f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
+            f'{f_attr}{s_attr}{clip_attr}/>'
         )
 
     def draw_text(self, x: float, y: float, text: str, color: str, size: float = 11, align: str = "start", raw_coords: bool = False, opacity: float = 1.0) -> None:
@@ -1053,10 +1075,11 @@ class SVGRenderer:
         scale_fac = getattr(self, "font_scale", 1.0)
         final_size = size * scale_fac
 
+        clip_attr = '' if raw_coords else f' clip-path="url(#{self._clip_id})"'
         self._parts.append(
             f'<text x="{px:.2f}" y="{py:.2f}" text-anchor="{anchor}" '
-            f'font-family="{t["font"]}" font-size="{final_size:.1f}" fill="{color_str}" fill-opacity="{final_a:.3f}" '
-            f'clip-path="url(#{self._clip_id})">{utils.escape_xml(text)}</text>'
+            f'font-family="{t["font"]}" font-size="{final_size:.1f}" fill="{color_str}" fill-opacity="{final_a:.3f}"'
+            f'{clip_attr}>{utils.escape_xml(text)}</text>'
         )
 
     def draw_polygon(self, pts: Sequence[tuple[float, float]], color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
@@ -1073,8 +1096,9 @@ class SVGRenderer:
             s_attr = f' stroke="{sc_str}" stroke-opacity="{sc_final_a:.3f}" stroke-width="{stroke_width:.2f}"'
         else:
             s_attr = ' stroke="none"'
+        clip_attr = '' if raw_coords else f' clip-path="url(#{self._clip_id})"'
         self._parts.append(
-            f'<polygon points="{pts_str}" {f_attr}{s_attr} clip-path="url(#{self._clip_id})"/>'
+            f'<polygon points="{pts_str}" {f_attr}{s_attr}{clip_attr}/>'
         )
 
     def hspan(self, ymin: float, ymax: float, y0: float, y1: float, color: str, alpha: float = 0.25) -> None:
