@@ -195,6 +195,8 @@ class Canvas:
             buf[j + 2] = int(buf[j + 2] * inv + fb + 0.5)
 
     def hline(self, x0: int, x1: int, y: int, color: tuple[int, int, int], a: float = 1.0) -> None:
+        # tolerate float coordinates (plot geometry is float-valued)
+        x0, x1, y = int(round(x0)), int(round(x1)), int(round(y))
         if x0 > x1:
             x0, x1 = x1, x0
         if a >= 0.999:
@@ -203,6 +205,8 @@ class Canvas:
             self._row_span_alpha(y, x0, x1 + 1, color, a)
 
     def vline(self, x: int, y0: int, y1: int, color: tuple[int, int, int], a: float = 1.0) -> None:
+        # tolerate float coordinates (plot geometry is float-valued)
+        x, y0, y1 = int(round(x)), int(round(y0)), int(round(y1))
         if x < 0 or x >= self.w:
             return
         if y0 > y1:
@@ -844,66 +848,93 @@ class RasterRenderer:
                 self.cv.dot(bx + 15, iy, 2.5, col)
             self.cv.text(bx + 28, iy - 3, lab, self._fg, scale=1)
 
+    # Markers are only drawn for series up to this many points; beyond it we
+    # can stop buffering scaled points entirely.
+    _MARKER_LIMIT = 80
+
     def line_series(self, xs, ys, x0, x1, y0, y1, color, width=2.5, markers=True, dashed=False, step=False):
+        # Streaming renderer: each point is scaled, drawn against its
+        # predecessor and immediately discarded, so peak memory stays O(1)
+        # in the series length.  (The previous implementation materialised
+        # parallel scaled-tuple lists — segs / stepped / all_pts — costing
+        # hundreds of bytes per point and OOM-killing large inputs.)
         self._sync_geom()
         col = parse_color(color)
-        segs: list[list[tuple[float, float]]] = [[]]
         sx = self._sx
         sy = self._sy
+        limit = self._MARKER_LIMIT
+        # Buffer points for marker pass only while the series can still
+        # qualify for markers (<= limit points); otherwise drop the buffer.
+        marker_pts: list[tuple[float, float]] | None = [] if markers else None
+        px = py = 0.0     # previous point of the current segment
+        seg_len = 0       # points seen in the current segment
+
+        def draw(ax: float, ay: float, bx: float, by: float) -> None:
+            if dashed:
+                self._dashed_segment(ax, ay, bx, by, col, width)
+            else:
+                self.cv.line(ax, ay, bx, by, col, width=width)
+
         for x, y in zip(xs, ys):
             if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
-                if segs[-1]:
-                    segs.append([])
-                continue
-            fx, fy = float(x), float(y)
+                fx = fy = math.nan
+            else:
+                fx, fy = float(x), float(y)
             if not math.isfinite(fx) or not math.isfinite(fy):
-                if segs[-1]:
-                    segs.append([])
+                # gap: close the current segment
+                if seg_len == 1:
+                    self.cv.dot(px, py, 3.5, col)
+                seg_len = 0
                 continue
-            segs[-1].append((sx(fx, x0, x1), sy(fy, y0, y1)))
-        all_pts: list[tuple[float, float]] = []
-        for pts in segs:
-            if len(pts) == 1:
-                self.cv.dot(pts[0][0], pts[0][1], 3.5, col)
-                all_pts.extend(pts)
-            elif len(pts) >= 2:
+            cx, cy = sx(fx, x0, x1), sy(fy, y0, y1)
+            if seg_len:
                 if step:
-                    stepped: list[tuple[float, float]] = [pts[0]]
-                    for (px, py), (nx, _ny) in zip(pts, pts[1:]):
-                        stepped.append((nx, py))
-                        stepped.append((nx, _ny))
-                    pts = stepped
-                if dashed:
-                    self._dashed_polyline(pts, col, width)
+                    # post-step: hold y until the next x, then jump vertically
+                    draw(px, py, cx, py)
+                    draw(cx, py, cx, cy)
                 else:
-                    self.cv.polyline(pts, col, width=width)
-                all_pts.extend(pts)
-        if markers and 0 < len(all_pts) <= 80:
+                    draw(px, py, cx, cy)
+            px, py = cx, cy
+            seg_len += 1
+            if marker_pts is not None:
+                if len(marker_pts) < limit:
+                    marker_pts.append((cx, cy))
+                else:
+                    marker_pts = None  # too many points — markers are off
+        if seg_len == 1:
+            self.cv.dot(px, py, 3.5, col)
+
+        if marker_pts:
             bg = self._bg
-            for px, py in all_pts:
-                self.cv.dot(px, py, 3.0, col)
-                self.cv.dot(px, py, 1.4, bg)
+            for mx, my in marker_pts:
+                self.cv.dot(mx, my, 3.0, col)
+                self.cv.dot(mx, my, 1.4, bg)
+
+    def _dashed_segment(self, x0, y0, x1, y1, col, width, a=1.0, dash=6.0, gap=5.0):
+        """Draw one dashed line segment (pixel space)."""
+        dist = math.hypot(x1 - x0, y1 - y0)
+        if dist < 1e-6:
+            return
+        period = dash + gap
+        n = int(dist // period) + 1
+        for s in range(n):
+            t0 = min(1.0, s * period / dist)
+            t1 = min(1.0, (s * period + dash) / dist)
+            if t0 >= t1:
+                break
+            self.cv.line(
+                x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0,
+                x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1,
+                col, width=width, a=a,
+            )
 
     def _dashed_polyline(self, pts, col, width, a=1.0, dash=6.0, gap=5.0):
         """Draw a polyline with dash/gap pattern (pixel space)."""
         for i in range(len(pts) - 1):
-            x0, y0 = pts[i]
-            x1, y1 = pts[i + 1]
-            dist = math.hypot(x1 - x0, y1 - y0)
-            if dist < 1e-6:
-                continue
-            period = dash + gap
-            n = int(dist // period) + 1
-            for s in range(n):
-                t0 = min(1.0, s * period / dist)
-                t1 = min(1.0, (s * period + dash) / dist)
-                if t0 >= t1:
-                    break
-                self.cv.line(
-                    x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0,
-                    x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1,
-                    col, width=width, a=a,
-                )
+            self._dashed_segment(
+                pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1],
+                col, width, a=a, dash=dash, gap=gap,
+            )
 
     def area_series(self, xs, ys, x0, x1, y0, y1, color, opacity=0.25):
         self._sync_geom()
@@ -1194,6 +1225,9 @@ class RasterRenderer:
             self.empty_message("No data")
             return
         cols = max(len(r) for r in matrix)
+        if cols == 0:
+            self.empty_message("No data")
+            return
         cell_w = self._pw / cols
         cell_h = self._ph / rows
         nan_rgb = parse_color(nan_color)

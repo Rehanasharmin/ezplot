@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+**Performance / memory**
+
+- Line rendering (PNG + SVG) is now streaming: points are scaled, drawn and discarded one at a time instead of being buffered into parallel scaled-tuple lists (`segs` / `stepped` / `all_pts`). Peak render overhead dropped from ~200 B/point to ~55 B/point; a 1M-point line chart now peaks at ~143 MB RSS (was ~281 MB) — on par with matplotlib — and multi-million-point series no longer risk an OOM kill on small machines.
+- `_prepare_xy` computes axis extents with O(1) streaming aggregates instead of materialising full `all_x`/`all_y` copies of every series, and only copies series lists when they actually need transforming (sort/smooth/length-align).
+- SVG step-mode paths are now built without O(n²) string concatenation.
+
+**Fixes**
+
+- **PNG heatmaps no longer show "Render error: can't multiply sequence by non-int of type 'float'"**: the colorbar outline passed float coordinates into the raster canvas' `hline`/`vline` fast paths, which required ints; the exception was swallowed and the error banner was baked over the chart (also dropping row/column labels). `hline`/`vline` now accept float coordinates.
+- Heatmaps whose rows are all empty (e.g. `[[], []]`) now render a "No data" message instead of baking "Render error: division by zero" into the output.
+- Raster (PNG) step charts no longer draw point markers on the synthetic step corners — markers now appear only on real data points, matching the SVG renderer.
+
 ## 1.6.0
 
 **New chart types**
