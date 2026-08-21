@@ -2,7 +2,7 @@
 
 **Dead-simple, fast plotting for Python.**
 
-*ℹ️If you want guide for this. You should visit [Ezplot website](https://ezplot.netlify.app/)*
+*ℹ️ If you want guide for this. You should visit [Ezplot website](https://ezplot.netlify.app/)*
 
 One-liners · PNG / JPEG / SVG · zero *required* dependencies · production knobs.
 
