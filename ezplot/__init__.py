@@ -31,6 +31,10 @@ from .charts import (
 )
 from .style import themes, set_theme, COLORS, HEATMAPS, get_heatmap
 from .config import defaults, reset_defaults, get_defaults
+from .diagnostics import Diagnostic, DiagnosticLog, Severity, get_diagnostics, interpret_exception
+
+# Friendly public alias for the process-wide diagnostic interpreter.
+diagnostics = get_diagnostics
 
 __version__ = "1.6.0"
 __all__ = [
@@ -61,5 +65,11 @@ __all__ = [
     "defaults",
     "reset_defaults",
     "get_defaults",
+    "Diagnostic",
+    "DiagnosticLog",
+    "Severity",
+    "diagnostics",
+    "get_diagnostics",
+    "interpret_exception",
     "__version__",
 ]
