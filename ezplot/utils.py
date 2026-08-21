@@ -657,6 +657,80 @@ def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
 
+def clip_line_to_rect(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    xmin: float,
+    ymin: float,
+    xmax: float,
+    ymax: float,
+) -> tuple[float, float, float, float] | None:
+    """Clip a line segment to an axis-aligned rectangle.
+
+    Returns the clipped endpoints or ``None`` when the segment lies fully
+    outside. Uses the Cohen–Sutherland algorithm, which is cheap and stable
+    for repeated per-segment clipping in the renderers.
+    """
+    if xmin > xmax:
+        xmin, xmax = xmax, xmin
+    if ymin > ymax:
+        ymin, ymax = ymax, ymin
+
+    INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
+
+    def _code(x: float, y: float) -> int:
+        code = INSIDE
+        if x < xmin:
+            code |= LEFT
+        elif x > xmax:
+            code |= RIGHT
+        if y < ymin:
+            code |= TOP
+        elif y > ymax:
+            code |= BOTTOM
+        return code
+
+    c0 = _code(x0, y0)
+    c1 = _code(x1, y1)
+
+    while True:
+        if not (c0 | c1):
+            return x0, y0, x1, y1
+        if c0 & c1:
+            return None
+
+        out = c0 or c1
+        if out & TOP:
+            if y1 == y0:
+                return None
+            x = x0 + (x1 - x0) * (ymin - y0) / (y1 - y0)
+            y = ymin
+        elif out & BOTTOM:
+            if y1 == y0:
+                return None
+            x = x0 + (x1 - x0) * (ymax - y0) / (y1 - y0)
+            y = ymax
+        elif out & RIGHT:
+            if x1 == x0:
+                return None
+            y = y0 + (y1 - y0) * (xmax - x0) / (x1 - x0)
+            x = xmax
+        else:  # LEFT
+            if x1 == x0:
+                return None
+            y = y0 + (y1 - y0) * (xmin - x0) / (x1 - x0)
+            x = xmin
+
+        if out == c0:
+            x0, y0 = x, y
+            c0 = _code(x0, y0)
+        else:
+            x1, y1 = x, y
+            c1 = _code(x1, y1)
+
+
 def unique_id(prefix: str = "ez") -> str:
     """Cheap unique-ish id for SVG clipPaths when embedding many charts."""
     import time

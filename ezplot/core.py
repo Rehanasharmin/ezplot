@@ -1469,6 +1469,32 @@ class Plot:
             r.footnote(self._footnote)
         return r.finish()
 
+    def _stacked_bar_extents(
+        self,
+        series: Sequence[dict[str, Any]],
+        n: int,
+    ) -> tuple[list[float], list[float]]:
+        """Per-category positive and negative totals for stacked bars."""
+        pos_totals: list[float] = []
+        neg_totals: list[float] = []
+        for i in range(n):
+            pos = 0.0
+            neg = 0.0
+            for s in series:
+                vals = s.get("values") or []
+                if i >= len(vals) or not isinstance(vals[i], (int, float)):
+                    continue
+                fv = float(vals[i])
+                if not math.isfinite(fv):
+                    continue
+                if fv >= 0:
+                    pos += fv
+                else:
+                    neg += fv
+            pos_totals.append(pos)
+            neg_totals.append(neg)
+        return pos_totals, neg_totals
+
     def _render_bar(self, r: SVGRenderer, palette: list[str]) -> str:
         series = list(self._series)
         cats = list(series[0].get("categories") or [])
@@ -1555,13 +1581,8 @@ class Plot:
         if self._ylim:
             y0, y1 = self._ylim
         elif stacked:
-            totals = []
-            for i in range(n):
-                totals.append(sum(
-                    float(sv[i]) for sv in (s.get("values") or [] for s in series)
-                    if i < len(sv) and isinstance(sv[i], (int, float)) and math.isfinite(float(sv[i]))
-                ))
-            y0, y1 = utils.data_range(totals + [0.0], pad=0.08, include_zero=True)
+            pos_totals, neg_totals = self._stacked_bar_extents(series, n)
+            y0, y1 = utils.data_range(pos_totals + neg_totals + [0.0], pad=0.08, include_zero=True)
         else:
             y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
 
@@ -2166,13 +2187,8 @@ class Plot:
         if self._ylim:
             y0, y1 = self._ylim
         elif stacked:
-            totals = []
-            for i in range(n):
-                totals.append(sum(
-                    float(sv[i]) for sv in (s.get("values") or [] for s in series)
-                    if i < len(sv) and isinstance(sv[i], (int, float)) and math.isfinite(float(sv[i]))
-                ))
-            y0, y1 = utils.data_range(totals + [0.0], pad=0.08, include_zero=True)
+            pos_totals, neg_totals = self._stacked_bar_extents(series, n)
+            y0, y1 = utils.data_range(pos_totals + neg_totals + [0.0], pad=0.08, include_zero=True)
         else:
             y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
         r.axes(0, max(n, 1), y0, y1, grid=self._grid, xlabels=cats, categorical_x=True,

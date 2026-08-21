@@ -853,27 +853,30 @@ class RasterRenderer:
     _MARKER_LIMIT = 80
 
     def line_series(self, xs, ys, x0, x1, y0, y1, color, width=2.5, markers=True, dashed=False, step=False):
-        # Streaming renderer: each point is scaled, drawn against its
-        # predecessor and immediately discarded, so peak memory stays O(1)
-        # in the series length.  (The previous implementation materialised
-        # parallel scaled-tuple lists — segs / stepped / all_pts — costing
-        # hundreds of bytes per point and OOM-killing large inputs.)
+        # Streaming renderer: each point is scaled, clipped to the plot
+        # viewport and drawn against its predecessor immediately, so peak
+        # memory stays O(1) in the series length while avoiding massive
+        # off-screen raster spans when users zoom with xlim/ylim.
         self._sync_geom()
         col = parse_color(color)
         sx = self._sx
         sy = self._sy
         limit = self._MARKER_LIMIT
-        # Buffer points for marker pass only while the series can still
-        # qualify for markers (<= limit points); otherwise drop the buffer.
+        xmin, ymin = self._ml, self._mt
+        xmax, ymax = self._ml + self._pw, self._mt + self._ph
         marker_pts: list[tuple[float, float]] | None = [] if markers else None
-        px = py = 0.0     # previous point of the current segment
-        seg_len = 0       # points seen in the current segment
+        px = py = 0.0
+        seg_len = 0
 
         def draw(ax: float, ay: float, bx: float, by: float) -> None:
+            clipped = utils.clip_line_to_rect(ax, ay, bx, by, xmin, ymin, xmax, ymax)
+            if clipped is None:
+                return
+            cx0, cy0, cx1, cy1 = clipped
             if dashed:
-                self._dashed_segment(ax, ay, bx, by, col, width)
+                self._dashed_segment(cx0, cy0, cx1, cy1, col, width)
             else:
-                self.cv.line(ax, ay, bx, by, col, width=width)
+                self.cv.line(cx0, cy0, cx1, cy1, col, width=width)
 
         for x, y in zip(xs, ys):
             if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
@@ -881,15 +884,13 @@ class RasterRenderer:
             else:
                 fx, fy = float(x), float(y)
             if not math.isfinite(fx) or not math.isfinite(fy):
-                # gap: close the current segment
-                if seg_len == 1:
+                if seg_len == 1 and xmin <= px <= xmax and ymin <= py <= ymax:
                     self.cv.dot(px, py, 3.5, col)
                 seg_len = 0
                 continue
             cx, cy = sx(fx, x0, x1), sy(fy, y0, y1)
             if seg_len:
                 if step:
-                    # post-step: hold y until the next x, then jump vertically
                     draw(px, py, cx, py)
                     draw(cx, py, cx, cy)
                 else:
@@ -900,15 +901,17 @@ class RasterRenderer:
                 if len(marker_pts) < limit:
                     marker_pts.append((cx, cy))
                 else:
-                    marker_pts = None  # too many points — markers are off
-        if seg_len == 1:
+                    marker_pts = None
+        if seg_len == 1 and xmin <= px <= xmax and ymin <= py <= ymax:
             self.cv.dot(px, py, 3.5, col)
 
         if marker_pts:
             bg = self._bg
             for mx, my in marker_pts:
-                self.cv.dot(mx, my, 3.0, col)
-                self.cv.dot(mx, my, 1.4, bg)
+                if not (xmin <= mx <= xmax and ymin <= my <= ymax):
+                    continue
+                self.cv.dot(mx, my, 3.6, bg)
+                self.cv.dot(mx, my, 2.3, col)
 
     def _dashed_segment(self, x0, y0, x1, y1, col, width, a=1.0, dash=6.0, gap=5.0):
         """Draw one dashed line segment (pixel space)."""
@@ -1102,7 +1105,8 @@ class RasterRenderer:
         bar_w = max(1.0, band * (1 - gap))
         left_pad = band * gap * 0.5
         for i in range(n):
-            base = 0.0 if y0 <= 0 <= y1 else y0
+            pos_base = 0.0
+            neg_base = 0.0
             for si, vals in enumerate(series_values):
                 if i >= len(vals):
                     continue
@@ -1114,14 +1118,19 @@ class RasterRenderer:
                     continue
                 col = _pc(colors[si % len(colors)])
                 x = self._ml + i * band + left_pad
-                y_top = self._sy(base + fv, y0, y1)
-                y_bot = self._sy(base, y0, y1)
+                start = pos_base if fv > 0 else neg_base
+                end = start + fv
+                y_top = self._sy(end, y0, y1)
+                y_bot = self._sy(start, y0, y1)
                 top = y_top if y_top < y_bot else y_bot
                 h = abs(y_bot - y_top)
                 if h < 0.5:
                     h = 0.5
                 self.cv.rect(x, top, bar_w, h, col, radius=2)
-                base += fv
+                if fv > 0:
+                    pos_base = end
+                else:
+                    neg_base = end
 
     def pie(self, values, labels, colors, donut=False):
         self._sync_geom()
@@ -1242,7 +1251,9 @@ class RasterRenderer:
                 self.cv.rect(left + j * cell_w, top + i * cell_h, cell_w + 0.5, cell_h + 0.5, col)
                 if show_values and v is not None and cell_w >= 40 and cell_h >= 16:
                     lab = value_fmt.format(v) if value_fmt else utils.format_number(v)
-                    self.cv.text(left + (j + 0.5) * cell_w, top + (i + 0.5) * cell_h - 3, lab, self._fg, scale=1, align="center")
+                    lum = 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2]
+                    text_col = (15, 23, 42) if lum > 150 else (248, 250, 252)
+                    self.cv.text(left + (j + 0.5) * cell_w, top + (i + 0.5) * cell_h - 3, lab, text_col, scale=1, align="center")
 
     def heat_colorbar(self, c0, c1, vmin, vmax):
         self._sync_geom()
@@ -1266,10 +1277,14 @@ class RasterRenderer:
         """Draw a primitive line. By default uses data coordinates unless raw_coords=True."""
         px1, py1 = (x1, y1) if raw_coords else self.to_pixels(x1, y1)
         px2, py2 = (x2, y2) if raw_coords else self.to_pixels(x2, y2)
+        if not raw_coords:
+            clipped = utils.clip_line_to_rect(px1, py1, px2, py2, self._ml, self._mt, self._ml + self._pw, self._mt + self._ph)
+            if clipped is None:
+                return
+            px1, py1, px2, py2 = clipped
         col, parsed_a = parse_color_alpha(color)
         final_a = parsed_a * opacity
         if dashed:
-            # simple dashed drawing
             dist = math.hypot(px2 - px1, py2 - py1)
             if dist < 1e-9:
                 return
@@ -1328,11 +1343,10 @@ class RasterRenderer:
         px, py = (x, y) if raw_coords else self.to_pixels(x, y)
         col, parsed_a = parse_color_alpha(color)
         final_a = parsed_a * opacity
-        # font scale: map size to approximate bitmap font scale (minimum 1)
-        # Multiply size by self.font_scale if RasterRenderer has it, else 1.0
         scale_fac = getattr(self, "font_scale", 1.0)
         scale = max(1, int(round(size / 11 * scale_fac)))
-        self.cv.text(px, py - font.text_height(scale) * 0.5, text, col, scale=scale, align=align, a=final_a)
+        anchor = "left" if align in ("start", "left") else ("end" if align in ("end", "right") else "center")
+        self.cv.text(px, py - font.text_height(scale) * 0.5, text, col, scale=scale, align=anchor, a=final_a)
 
     def draw_polygon(self, pts: Sequence[tuple[float, float]], color: str, fill: bool = True, stroke_color: str | None = None, stroke_width: float = 1.0, raw_coords: bool = False, opacity: float = 1.0) -> None:
         """Draw primitive polygon. Points are a sequence of (x, y) in data coordinates unless raw_coords=True."""

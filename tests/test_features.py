@@ -144,6 +144,29 @@ def test_stacked_bar_svg_and_raster():
     assert len(p.png_bytes()) > 100
 
 
+def test_stacked_bar_mixed_signs_split_around_zero():
+    svg = (
+        ez.bar(["Net"], [[3], [-2]], labels=["up", "down"])
+        .stacked()
+        .legend(False)
+        .grid(False)
+        .ylim(-4, 4)
+        .svg()
+    )
+    rects = re.findall(
+        r'<rect x="[\d.]+" y="([\d.]+)" width="[\d.]+" height="([\d.]+)" rx="2" fill="#[0-9a-fA-F]{6}" clip-path=',
+        svg,
+    )
+    assert len(rects) == 2
+    pos_y = float(rects[0][0])
+    neg_y = float(rects[1][0])
+    assert pos_y < 150
+    assert neg_y > 180
+    assert len(
+        ez.bar(["Net"], [[3], [-2]], labels=["up", "down"]).stacked().ylim(-4, 4).png_bytes()
+    ) > 100
+
+
 def test_dashed_lines_reach_raster():
     # regression: dashed lines rendered solid in PNG
     b = ez.line([1, 2, 3], [1, 2, 1]).dashed().png_bytes()
@@ -180,6 +203,19 @@ def test_xticks_datetime():
 def test_area_nan_gaps_segmented():
     svg = ez.area([1, 2, 3, 4], [1, math.nan, 3, 4]).svg()
     assert "<path" in svg
+
+
+def test_heatmap_svg_labels_not_clipped():
+    svg = ez.heatmap(
+        [[1, 2], [3, 4]],
+        row_labels=["alpha", "beta"],
+        col_labels=["left", "right"],
+        show_values=False,
+    ).svg()
+    alpha = re.search(r'(<text[^>]*>alpha</text>)', svg)
+    right = re.search(r'(<text[^>]*>right</text>)', svg)
+    assert alpha and "clip-path" not in alpha.group(1)
+    assert right and "clip-path" not in right.group(1)
 
 
 def test_annotate_anchor_end():
