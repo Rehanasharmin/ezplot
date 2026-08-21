@@ -254,16 +254,36 @@ class Canvas:
             self.dot(x0, y0, max(1.0, width * 0.5), color, a)
             return
         half = max(0.5, width * 0.5)
-        # step ~1px along the line
+        # opaque, moderately thick line → a few parallel Bresenham strokes
+        # offset perpendicular to the direction (≈1 px apart) plus round caps.
+        # This covers the same pixels as the old per-pixel dot stamping but is
+        # ~20x faster (no per-step sqrt / span bookkeeping).
+        if a >= 0.999 and half <= 3.0:
+            n = max(2, int(width + 0.5))
+            ux = -dy / dist
+            uy = dx / dist
+            if n == 2:
+                offs = (-0.5, 0.5)
+            else:
+                base = (n - 1) * 0.5
+                offs = tuple(i - base for i in range(n))
+            for o in offs:
+                self._bresenham(
+                    int(round(x0 + ux * o)), int(round(y0 + uy * o)),
+                    int(round(x1 + ux * o)), int(round(y1 + uy * o)),
+                    color,
+                )
+            self.dot(x0, y0, half, color, a)
+            self.dot(x1, y1, half, color, a)
+            return
+        # alpha-blended or very thick → keep the stamped-capsule path
         steps = max(1, int(dist + 0.5))
         inv = 1.0 / steps
-        # for moderate thickness use small stamps
         if half <= 2.0:
             for i in range(steps + 1):
                 t = i * inv
                 self.dot(x0 + dx * t, y0 + dy * t, half, color, a)
         else:
-            # thick: draw as capsule of circles less frequently
             step = max(1, int(half))
             for i in range(0, steps + 1, step):
                 t = i * inv
@@ -731,6 +751,9 @@ class RasterRenderer:
         log_x: bool = False,
         log_y: bool = False,
         datetime_x: bool = False,
+        categorical_center: bool = True,
+        xaxis_at: float | None = None,
+        yaxis_at: float | None = None,
     ) -> None:
         self.x0 = x0
         self.x1 = x1
@@ -777,8 +800,18 @@ class RasterRenderer:
                     sx = int(self._sx(x, x0, x1) + 0.5)
                     self.cv.vline(sx, top, bottom, self._grid)
 
-        self.cv.hline(left, right, bottom, self._axis)
-        self.cv.vline(left, top, bottom, self._axis)
+        # axis lines normally hug the plot edges; bar charts may anchor them
+        # at the zero line instead so the bars visually connect to the axes
+        if xaxis_at is not None and y0 <= xaxis_at <= y1:
+            xaxis_y = int(self._sy(xaxis_at, y0, y1) + 0.5)
+        else:
+            xaxis_y = bottom
+        if yaxis_at is not None and x0 <= yaxis_at <= x1:
+            yaxis_x = int(self._sx(yaxis_at, x0, x1) + 0.5)
+        else:
+            yaxis_x = left
+        self.cv.hline(left, right, xaxis_y, self._axis)
+        self.cv.vline(yaxis_x, top, bottom, self._axis)
 
         for y in yt:
             sy = int(self._sy(y, y0, y1) + 0.5)
@@ -797,7 +830,10 @@ class RasterRenderer:
             max_len = max((len(str(l)) for l in xlabels), default=0)
             do_rotate = do_rotate or n > 8 or max_len > 10
             for i, lab in enumerate(xlabels):
-                sx = self._sx(i + 0.5, 0, n) if n else left
+                # bars/boxes are drawn at band centers; line/scatter points
+                # sit on the band boundaries → ticks must match
+                pos = i + 0.5 if categorical_center else i
+                sx = self._sx(pos, 0, n) if n else left
                 self.cv.vline(int(sx), bottom, bottom + 4, self._axis)
                 shown = utils.truncate_label(str(lab), 12)
                 if do_rotate:
@@ -867,6 +903,23 @@ class RasterRenderer:
         marker_pts: list[tuple[float, float]] | None = [] if markers else None
         px = py = 0.0
         seg_len = 0
+        # fast linear mapping (common non-log case)
+        linear = (
+            not self._logx
+            and not self._logy
+            and x1 != x0
+            and y1 != y0
+            and math.isfinite(x0)
+            and math.isfinite(x1)
+            and math.isfinite(y0)
+            and math.isfinite(y1)
+        )
+        if linear:
+            xsc = self._pw / (x1 - x0)
+            ysc = -self._ph / (y1 - y0)
+            ml = self._ml
+            yconst = self._mt + self._ph
+        isfinite = math.isfinite
 
         def draw(ax: float, ay: float, bx: float, by: float) -> None:
             clipped = utils.clip_line_to_rect(ax, ay, bx, by, xmin, ymin, xmax, ymax)
@@ -883,12 +936,16 @@ class RasterRenderer:
                 fx = fy = math.nan
             else:
                 fx, fy = float(x), float(y)
-            if not math.isfinite(fx) or not math.isfinite(fy):
+            if not isfinite(fx) or not isfinite(fy):
                 if seg_len == 1 and xmin <= px <= xmax and ymin <= py <= ymax:
                     self.cv.dot(px, py, 3.5, col)
                 seg_len = 0
                 continue
-            cx, cy = sx(fx, x0, x1), sy(fy, y0, y1)
+            if linear:
+                cx = ml + (fx - x0) * xsc
+                cy = yconst + (fy - y0) * ysc
+            else:
+                cx, cy = sx(fx, x0, x1), sy(fy, y0, y1)
             if seg_len:
                 if step:
                     draw(px, py, cx, py)
@@ -969,11 +1026,32 @@ class RasterRenderer:
         self._sync_geom()
         col = parse_color(color)
         sx, sy = self._sx, self._sy
+        # fast linear mapping (common non-log case)
+        linear = (
+            not self._logx
+            and not self._logy
+            and x1 != x0
+            and y1 != y0
+            and math.isfinite(x0)
+            and math.isfinite(x1)
+            and math.isfinite(y0)
+            and math.isfinite(y1)
+        )
+        if linear:
+            xsc = self._pw / (x1 - x0)
+            ysc = -self._ph / (y1 - y0)
+            ml = self._ml
+            yconst = self._mt + self._ph
+        isfinite = math.isfinite
+        dot = self.cv.dot
         for x, y in zip(xs, ys):
             if isinstance(x, (int, float)) and isinstance(y, (int, float)):
                 fx, fy = float(x), float(y)
-                if math.isfinite(fx) and math.isfinite(fy):
-                    self.cv.dot(sx(fx, x0, x1), sy(fy, y0, y1), size, col, a=alpha)
+                if isfinite(fx) and isfinite(fy):
+                    if linear:
+                        dot(ml + (fx - x0) * xsc, yconst + (fy - y0) * ysc, size, col, a=alpha)
+                    else:
+                        dot(sx(fx, x0, x1), sy(fy, y0, y1), size, col, a=alpha)
 
     def bars_v(self, n, values, y0, y1, colors, gap=0.28, group=0, n_groups=1, show_values=False, value_fmt=None):
         if n <= 0:

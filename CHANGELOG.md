@@ -8,6 +8,16 @@
 - `_prepare_xy` computes axis extents with O(1) streaming aggregates instead of materialising full `all_x`/`all_y` copies of every series, and only copies series lists when they actually need transforming (sort/smooth/length-align).
 - SVG step-mode paths are now built without O(n²) string concatenation.
 
+**Alignment**
+
+- Bars now meet the axis lines instead of floating above them: bar value ranges are anchored at zero (no padding past zero for one-sided data), and the axis line itself is drawn on the zero line whenever zero lies inside the range — for positive, negative and mixed-sign data, in both SVG and PNG.
+- Categorical line/scatter charts no longer draw their points on a padded numeric scale while the tick labels sat on a separate 0..n scale — series and axis now share one mapping, so points/markers land exactly on the category tick marks (bar/box ticks stay at band centers).
+
+**Performance / memory**
+
+- PNG thick lines (width > 1.5 px) are drawn as a few parallel Bresenham strokes with round caps instead of stamping a filled circle per pixel — same visual thickness, ~4x faster end-to-end for a 5 000-point line PNG.
+- SVG line/scatter and raster line/scatter point mapping is inlined for the common linear-axis case (no per-point method calls), and `to_float`/`is_datetime` fast-paths avoid `hasattr` probes for plain numbers — roughly 2x faster SVG line/scatter rendering.
+
 **Fixes**
 
 - **PNG heatmaps no longer show "Render error: can't multiply sequence by non-int of type 'float'"**: the colorbar outline passed float coordinates into the raster canvas' `hline`/`vline` fast paths, which required ints; the exception was swallowed and the error banner was baked over the chart (also dropping row/column labels). `hline`/`vline` now accept float coordinates.

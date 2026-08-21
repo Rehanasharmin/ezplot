@@ -1540,8 +1540,9 @@ class Plot:
             if self._xlim:
                 x0, x1 = self._xlim
             else:
-                x0, x1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
-            r.axes(x0, x1, 0, max(n, 1), grid=self._grid, categorical_x=False, yticks=[])
+                x0, x1 = utils.bar_range(all_vals)
+            r.axes(x0, x1, 0, max(n, 1), grid=self._grid, categorical_x=False, yticks=[],
+                   yaxis_at=0.0 if x0 <= 0 <= x1 else None)
             # spans swap meaning for horizontal bars: value band is vertical,
             # category band is horizontal
             for hs in getattr(self, "_hspans", []) or []:
@@ -1582,9 +1583,9 @@ class Plot:
             y0, y1 = self._ylim
         elif stacked:
             pos_totals, neg_totals = self._stacked_bar_extents(series, n)
-            y0, y1 = utils.data_range(pos_totals + neg_totals + [0.0], pad=0.08, include_zero=True)
+            y0, y1 = utils.bar_range(pos_totals + neg_totals)
         else:
-            y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
+            y0, y1 = utils.bar_range(all_vals)
 
         r.axes(
             0,
@@ -1595,6 +1596,7 @@ class Plot:
             xlabels=cats,
             categorical_x=True,
             rotate_x=self._xrot,
+            xaxis_at=0.0 if y0 <= 0 <= y1 else None,
         )
         # Render background highlight spans
         for hs in getattr(self, "_hspans", []) or []:
@@ -1666,6 +1668,10 @@ class Plot:
         ystat = _AxisStats()
         log_x = bool(getattr(self, "_logx", False))
         log_y = bool(getattr(self, "_logy", False))
+        # locals for the per-point hot loops below
+        isfinite = math.isfinite
+        xadd = xstat.add
+        yadd = ystat.add
 
         for s in self._series:
             xs = s.get("x") or []
@@ -1710,13 +1716,37 @@ class Plot:
                         else:
                             xerr = seq
 
+            # per-point loops — `type() is` fast paths since coercion already
+            # produced plain floats (nan for gaps)
             for x in xs:
-                if isinstance(x, (int, float)) and math.isfinite(float(x)):
-                    xstat.add(float(x))
+                if type(x) is float:
+                    if isfinite(x):
+                        xadd(x)
+                elif type(x) is int:
+                    xadd(float(x))
+                elif isinstance(x, (int, float)) and isfinite(float(x)):
+                    xadd(float(x))
             for y in ys:
-                if isinstance(y, (int, float)) and math.isfinite(float(y)):
-                    ystat.add(float(y))
-            prepared.append({**s, "x": xs, "y": ys, "yerr": yerr, "xerr": xerr})
+                if type(y) is float:
+                    if isfinite(y):
+                        yadd(y)
+                elif type(y) is int:
+                    yadd(float(y))
+                elif isinstance(y, (int, float)) and isfinite(float(y)):
+                    yadd(float(y))
+            n_pts = 0
+            for x, y in zip(xs, ys):
+                if type(x) is float and type(y) is float:
+                    if isfinite(x) and isfinite(y):
+                        n_pts += 1
+                elif (
+                    isinstance(x, (int, float))
+                    and isinstance(y, (int, float))
+                    and isfinite(float(x))
+                    and isfinite(float(y))
+                ):
+                    n_pts += 1
+            prepared.append({**s, "x": xs, "y": ys, "yerr": yerr, "xerr": xerr, "n": n_pts})
 
         # log axes need strictly positive data; fall back to linear otherwise
         if log_x and xstat.has_nonpositive:
@@ -1748,16 +1778,19 @@ class Plot:
             ystat.log_range() if log_y else ystat.data_range(pad=0.08)
         )
 
-        # categorical x labels if we stored them
+        # categorical x labels if we stored them — series and axis must share
+        # the same 0..n mapping so points land exactly on the tick marks
         if self._categories and xstat.all_int:
+            x0, x1 = 0.0, float(max(len(self._categories), 1))
             r.axes(
-                0,
-                max(len(self._categories), 1),
+                x0,
+                x1,
                 y0,
                 y1,
                 grid=self._grid,
                 xlabels=self._categories,
                 categorical_x=True,
+                categorical_center=False,  # line/scatter points sit on boundaries
                 rotate_x=self._xrot,
                 log_y=log_y,
                 datetime_x=self._x_is_datetime,
@@ -1788,14 +1821,7 @@ class Plot:
                 c = self._color if (i == 0 and self._color) else palette[i % len(palette)]
             sk = s.get("kind", self.kind)
             xs, ys = s["x"], s["y"]
-            n_pts = sum(
-                1
-                for x, y in zip(xs, ys)
-                if isinstance(x, (int, float))
-                and isinstance(y, (int, float))
-                and math.isfinite(float(x))
-                and math.isfinite(float(y))
-            )
+            n_pts = s.get("n", 0)
 
             if sk == "area":
                 r.area(xs, ys, x0, x1, y0, y1, c)
@@ -2150,8 +2176,9 @@ class Plot:
             if self._xlim:
                 x0, x1 = self._xlim
             else:
-                x0, x1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
-            r.axes(x0, x1, 0, max(n, 1), grid=self._grid, categorical_x=False, yticks=[])
+                x0, x1 = utils.bar_range(all_vals)
+            r.axes(x0, x1, 0, max(n, 1), grid=self._grid, categorical_x=False, yticks=[],
+                   yaxis_at=0.0 if x0 <= 0 <= x1 else None)
 
             # spans swap meaning for horizontal bars
             for hs in getattr(self, "_hspans", []) or []:
@@ -2188,11 +2215,12 @@ class Plot:
             y0, y1 = self._ylim
         elif stacked:
             pos_totals, neg_totals = self._stacked_bar_extents(series, n)
-            y0, y1 = utils.data_range(pos_totals + neg_totals + [0.0], pad=0.08, include_zero=True)
+            y0, y1 = utils.bar_range(pos_totals + neg_totals)
         else:
-            y0, y1 = utils.data_range(all_vals + [0.0], pad=0.08, include_zero=True)
+            y0, y1 = utils.bar_range(all_vals)
         r.axes(0, max(n, 1), y0, y1, grid=self._grid, xlabels=cats, categorical_x=True,
-               rotate_x=self._xrot)
+               rotate_x=self._xrot,
+               xaxis_at=0.0 if y0 <= 0 <= y1 else None)
 
         # Render background highlight spans
         for hs in getattr(self, "_hspans", []) or []:
@@ -2257,8 +2285,10 @@ class Plot:
             ystat.log_range() if log_y else ystat.data_range(pad=0.08)
         )
         if self._categories and xstat.all_int:
-            r.axes(0, max(len(self._categories), 1), y0, y1, grid=self._grid,
+            x0, x1 = 0.0, float(max(len(self._categories), 1))
+            r.axes(x0, x1, y0, y1, grid=self._grid,
                    xlabels=self._categories, categorical_x=True,
+                   categorical_center=False,  # line/scatter points sit on boundaries
                    rotate_x=self._xrot, log_y=log_y, datetime_x=self._x_is_datetime)
         else:
             r.axes(x0, x1, y0, y1, grid=self._grid,
@@ -2280,11 +2310,7 @@ class Plot:
             c = s.get("color") or (self._color if i == 0 and self._color else palette[i % len(palette)])
             sk = s.get("kind", self.kind)
             xs, ys = s["x"], s["y"]
-            n_pts = sum(
-                1 for x, y in zip(xs, ys)
-                if isinstance(x, (int, float)) and isinstance(y, (int, float))
-                and math.isfinite(float(x)) and math.isfinite(float(y))
-            )
+            n_pts = s.get("n", 0)
             if sk == "area":
                 r.area_series(xs, ys, x0, x1, y0, y1, c)
             elif sk == "scatter":

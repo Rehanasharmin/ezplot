@@ -549,6 +549,93 @@ def test_new_kinds_never_raise_raster():
         assert len(p.png_bytes()) > 100
 
 
+# --------------------------------------------------------------------------- #
+# alignment: bars meet the axis lines, categorical ticks meet the data
+# --------------------------------------------------------------------------- #
+
+def _svg_axis_lines(svg: str) -> list[tuple[float, float, float, float]]:
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(svg)
+    return [
+        (float(el.get("x1")), float(el.get("y1")), float(el.get("x2")), float(el.get("y2")))
+        for el in root.iter()
+        if el.tag.endswith("line") and el.get("stroke") == "#94a3b8"
+    ]
+
+
+def _svg_bar_rects(svg: str) -> list[tuple[float, float, float, float]]:
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(svg)
+    return [
+        (float(el.get("x")), float(el.get("y")), float(el.get("width")), float(el.get("height")))
+        for el in root.iter()
+        if el.tag.endswith("rect") and el.get("x") is not None
+        and el.get("fill") not in (None, "#ffffff", "#e2e8f0")
+        # exclude legend swatches (small, inside the legend box)
+        and float(el.get("width")) >= 20
+    ]
+
+
+def test_bars_meet_axis_line():
+    # vertical bars: bottom edge sits exactly on the x-axis line
+    for vals in ([3, 7, 2, 9], [-3, -7, -2], [-3, 7, -2, 9]):
+        lines = _svg_axis_lines(ez.bar(["A", "B", "C", "D"], vals).svg())
+        hlines = [l for l in lines if abs(l[1] - l[3]) < 0.01]
+        assert hlines
+        axis_y = max(hlines, key=lambda l: l[2] - l[0])[1]
+        for x, y, w, h in _svg_bar_rects(ez.bar(["A", "B", "C", "D"], vals).svg()):
+            assert abs(y + h - axis_y) < 0.01 or abs(y - axis_y) < 0.01
+
+
+def test_hbars_meet_axis_line():
+    for vals in ([3, 7, 2, 9], [-3, -7, -2], [-3, 7, -2, 9]):
+        svg = ez.bar(["A", "B", "C", "D"], vals).horizontal().svg()
+        vlines = [l for l in _svg_axis_lines(svg) if abs(l[0] - l[2]) < 0.01]
+        assert vlines
+        axis_x = max(vlines, key=lambda l: l[3] - l[1])[0]
+        for x, y, w, h in _svg_bar_rects(svg):
+            assert abs(x - axis_x) < 0.01 or abs(x + w - axis_x) < 0.01
+
+
+def test_stacked_bars_meet_axis_line():
+    svg = ez.bar(["A", "B"], [[1, 2], [3, 4]], labels=["x", "y"]).stacked().svg()
+    hlines = [l for l in _svg_axis_lines(svg) if abs(l[1] - l[3]) < 0.01]
+    axis_y = max(hlines, key=lambda l: l[2] - l[0])[1]
+    bottoms = [y + h for x, y, w, h in _svg_bar_rects(svg)]
+    assert any(abs(b - axis_y) < 0.01 for b in bottoms)
+
+
+def test_categorical_line_points_align_with_ticks():
+    import xml.etree.ElementTree as ET
+    svg = ez.line(["A", "B", "C", "D"], [3, 7, 2, 9]).markers(True).svg()
+    root = ET.fromstring(svg)
+    label_xs = {
+        float(el.get("x"))
+        for el in root.iter()
+        if el.tag.endswith("text") and (el.text or "").strip() in {"A", "B", "C", "D"}
+    }
+    marker_xs = {
+        float(el.get("cx"))
+        for el in root.iter()
+        if el.tag.endswith("circle") and el.get("r") == "3.5"
+    }
+    assert label_xs == marker_xs
+
+
+def test_categorical_bar_centers_align_with_ticks():
+    svg = ez.bar(["A", "B", "C", "D"], [3, 7, 2, 9]).svg()
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(svg)
+    label_xs = sorted(
+        float(el.get("x"))
+        for el in root.iter()
+        if el.tag.endswith("text") and (el.text or "").strip() in {"A", "B", "C", "D"}
+    )
+    centers = sorted(x + w / 2 for x, y, w, h in _svg_bar_rects(svg))
+    assert len(label_xs) == len(centers)
+    assert all(abs(a - b) < 0.01 for a, b in zip(label_xs, centers))
+
+
 if __name__ == "__main__":
     failed = 0
     for name, fn in list(globals().items()):
