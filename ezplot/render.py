@@ -383,8 +383,35 @@ class SVGRenderer:
         dashed: bool = False,
         step: bool = False,
     ) -> None:
-        # break lines on NaN gaps
-        segs: list[list[tuple[float, float]]] = [[]]
+        # Streaming renderer: points are scaled and formatted one at a time
+        # and each completed segment is flushed straight into the SVG part
+        # list.  No parallel scaled-tuple lists (segs / all_pts) are kept,
+        # so transient memory stays proportional to the emitted SVG rather
+        # than several hundred bytes per point.  (Also avoids the previous
+        # O(n^2) string concatenation in step mode.)
+        dash = ' stroke-dasharray="6,4"' if dashed else ""
+        limit = 80  # markers are only drawn for series up to this many points
+        marker_pts: list[tuple[float, float]] | None = [] if markers else None
+        seg: list[str] = []   # formatted "x,y" coords of the current segment
+        px = py = 0.0         # previous (scaled) point of the current segment
+
+        def flush() -> None:
+            if not seg:
+                return
+            if len(seg) == 1:
+                self._parts.append(
+                    f'<circle cx="{px:.2f}" cy="{py:.2f}" r="4" fill="{color}" '
+                    f'clip-path="url(#{self._clip_id})"/>'
+                )
+            else:
+                self._parts.append(
+                    f'<path d="M {" L ".join(seg)}" fill="none" stroke="{color}" '
+                    f'stroke-width="{width}" '
+                    f'stroke-linecap="round" stroke-linejoin="round"{dash} '
+                    f'clip-path="url(#{self._clip_id})"/>'
+                )
+            seg.clear()
+
         for x, y in zip(xs, ys):
             if (
                 not isinstance(x, (int, float))
@@ -392,41 +419,25 @@ class SVGRenderer:
                 or not math.isfinite(float(x))
                 or not math.isfinite(float(y))
             ):
-                if segs[-1]:
-                    segs.append([])
+                flush()
                 continue
-            segs[-1].append((self._sx(float(x), x0, x1), self._sy(float(y), y0, y1)))
-
-        dash = ' stroke-dasharray="6,4"' if dashed else ""
-        all_pts: list[tuple[float, float]] = []
-        for pts in segs:
-            if len(pts) == 1:
-                self._parts.append(
-                    f'<circle cx="{pts[0][0]:.2f}" cy="{pts[0][1]:.2f}" r="4" fill="{color}" '
-                    f'clip-path="url(#{self._clip_id})"/>'
-                )
-                all_pts.extend(pts)
-                continue
-            if len(pts) < 2:
-                continue
-            if step:
+            cx, cy = self._sx(float(x), x0, x1), self._sy(float(y), y0, y1)
+            if step and seg:
                 # post-step: hold y until the next x, then jump vertically
-                d = f"M {pts[0][0]:.2f},{pts[0][1]:.2f}"
-                for (px, py), (nx, ny) in zip(pts, pts[1:]):
-                    d += f" L {nx:.2f},{py:.2f} L {nx:.2f},{ny:.2f}"
-            else:
-                d = "M " + " L ".join(f"{px:.2f},{py:.2f}" for px, py in pts)
-            self._parts.append(
-                f'<path d="{d}" fill="none" stroke="{color}" stroke-width="{width}" '
-                f'stroke-linecap="round" stroke-linejoin="round"{dash} '
-                f'clip-path="url(#{self._clip_id})"/>'
-            )
-            all_pts.extend(pts)
+                seg.append(f"{cx:.2f},{py:.2f}")
+            seg.append(f"{cx:.2f},{cy:.2f}")
+            px, py = cx, cy
+            if marker_pts is not None:
+                if len(marker_pts) < limit:
+                    marker_pts.append((cx, cy))
+                else:
+                    marker_pts = None  # too many points — markers are off
+        flush()
 
-        if markers and 0 < len(all_pts) <= 80:
-            for px, py in all_pts:
+        if marker_pts:
+            for mx, my in marker_pts:
                 self._parts.append(
-                    f'<circle cx="{px:.2f}" cy="{py:.2f}" r="3.5" fill="{color}" '
+                    f'<circle cx="{mx:.2f}" cy="{my:.2f}" r="3.5" fill="{color}" '
                     f'stroke="{self.theme["bg"]}" stroke-width="1.5" '
                     f'clip-path="url(#{self._clip_id})"/>'
                 )
@@ -885,6 +896,9 @@ class SVGRenderer:
             self.empty_message("No data")
             return
         cols = max(len(r) for r in matrix)
+        if cols == 0:
+            self.empty_message("No data")
+            return
         cell_w = self.plot_w / cols
         cell_h = self.plot_h / rows
         t = self.theme

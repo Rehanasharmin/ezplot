@@ -24,6 +24,59 @@ _RASTER_EXTS = {".png", ".jpg", ".jpeg", ".jpe", ".webp", ".bmp", ".tif", ".tiff
 _JPEG_EXTS = {".jpg", ".jpeg", ".jpe"}
 
 
+class _AxisStats:
+    """Streaming per-axis aggregates (min/max/positivity/integrality).
+
+    Replaces the old `all_x`/`all_y` full-copy lists in `_prepare_xy` so
+    axis-range computation costs O(1) memory instead of O(n) per axis.
+    """
+
+    __slots__ = ("count", "lo", "hi", "pos_lo", "pos_hi", "all_int")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.lo = math.inf
+        self.hi = -math.inf
+        self.pos_lo = math.inf   # smallest strictly-positive value
+        self.pos_hi = -math.inf  # largest strictly-positive value
+        self.all_int = True      # every value is (near-)integral
+
+    def add(self, v: float) -> None:
+        self.count += 1
+        if v < self.lo:
+            self.lo = v
+        if v > self.hi:
+            self.hi = v
+        if v > 0:
+            if v < self.pos_lo:
+                self.pos_lo = v
+            if v > self.pos_hi:
+                self.pos_hi = v
+        if self.all_int and not abs(v - round(v)) < 1e-9:
+            self.all_int = False
+
+    @property
+    def has_nonpositive(self) -> bool:
+        return self.count > 0 and self.lo <= 0
+
+    def data_range(self, pad: float = 0.05) -> tuple[float, float]:
+        """Padded min/max range (mirrors utils.data_range semantics)."""
+        if self.count == 0:
+            return 0.0, 1.0
+        lo, hi = self.lo, self.hi
+        if lo == hi:
+            d = abs(lo) * 0.1 if lo != 0 else 1.0
+            return lo - d, hi + d
+        span = hi - lo
+        return lo - span * pad, hi + span * pad
+
+    def log_range(self, pad: float = 0.12) -> tuple[float, float]:
+        """Positive range for log axes: multiplicative padding (never <= 0)."""
+        if self.pos_hi < self.pos_lo:  # no positive values seen
+            return 1.0, 10.0
+        return self.pos_lo / (1 + pad), self.pos_hi * (1 + pad)
+
+
 class Plot:
     """A single chart. Prefer factories: `ez.line`, `ez.bar`, `ez.auto`, …"""
 
@@ -1359,6 +1412,11 @@ class Plot:
             r.ylabel(self._ylabel)
             return r.finish()
         cols = max(len(row) for row in matrix)
+        if cols == 0:
+            r.empty_message("No data")
+            r.xlabel(self._xlabel)
+            r.ylabel(self._ylabel)
+            return r.finish()
         row_labels = s.get("row_labels")
         col_labels = s.get("col_labels")
         show_values = bool(s.get("show_values", True))
@@ -1574,21 +1632,34 @@ class Plot:
 
     def _prepare_xy(
         self,
-    ) -> tuple[list[dict[str, Any]], list[float], list[float], bool, bool]:
-        """Shared SVG/raster prep: sorting, smoothing, error bars, log detection."""
+    ) -> tuple[list[dict[str, Any]], "_AxisStats", "_AxisStats", bool, bool]:
+        """Shared SVG/raster prep: sorting, smoothing, error bars, log detection.
+
+        Axis extents are accumulated as streaming `_AxisStats` (not full
+        copies of the data), and series lists are only copied when they
+        actually need to be transformed — keeping prep memory near O(1)
+        for large inputs.
+        """
         prepared: list[dict[str, Any]] = []
-        all_x: list[float] = []
-        all_y: list[float] = []
+        xstat = _AxisStats()
+        ystat = _AxisStats()
         log_x = bool(getattr(self, "_logx", False))
         log_y = bool(getattr(self, "_logy", False))
 
         for s in self._series:
-            xs = list(s.get("x") or [])
-            ys = list(s.get("y") or [])
+            xs = s.get("x") or []
+            ys = s.get("y") or []
+            if not isinstance(xs, (list, tuple)):
+                xs = list(xs)
+            if not isinstance(ys, (list, tuple)):
+                ys = list(ys)
             if self._sort_x:
                 xs, ys = utils.align_xy(xs, ys, drop_nan=False, sort_x=True)
             n = min(len(xs), len(ys))
-            xs, ys = xs[:n], ys[:n]
+            if len(xs) > n:
+                xs = xs[:n]
+            if len(ys) > n:
+                ys = ys[:n]
             if getattr(self, "_smooth", None):
                 ys = utils.moving_average(ys, int(self._smooth))
 
@@ -1618,23 +1689,20 @@ class Plot:
                         else:
                             xerr = seq
 
-            finite_x = [
-                float(x) for x in xs
-                if isinstance(x, (int, float)) and math.isfinite(float(x))
-            ]
-            finite_y = [
-                float(y) for y in ys
-                if isinstance(y, (int, float)) and math.isfinite(float(y))
-            ]
-            all_x.extend(finite_x)
-            all_y.extend(finite_y)
-            # log axes need strictly positive data; fall back to linear otherwise
-            if log_x and any(v <= 0 for v in finite_x):
-                log_x = False
-            if log_y and any(v <= 0 for v in finite_y):
-                log_y = False
+            for x in xs:
+                if isinstance(x, (int, float)) and math.isfinite(float(x)):
+                    xstat.add(float(x))
+            for y in ys:
+                if isinstance(y, (int, float)) and math.isfinite(float(y)):
+                    ystat.add(float(y))
             prepared.append({**s, "x": xs, "y": ys, "yerr": yerr, "xerr": xerr})
-        return prepared, all_x, all_y, log_x, log_y
+
+        # log axes need strictly positive data; fall back to linear otherwise
+        if log_x and xstat.has_nonpositive:
+            log_x = False
+        if log_y and ystat.has_nonpositive:
+            log_y = False
+        return prepared, xstat, ystat, log_x, log_y
 
     def _log_range(self, values: list[float], pad: float = 0.12) -> tuple[float, float]:
         """Positive range for log axes: multiplicative padding (never ≤ 0)."""
@@ -1646,23 +1714,21 @@ class Plot:
         return pos[0] / (1 + pad), pos[-1] * (1 + pad)
 
     def _render_xy(self, r: SVGRenderer, palette: list[str]) -> str:
-        prepared, all_x, all_y, log_x, log_y = self._prepare_xy()
+        prepared, xstat, ystat, log_x, log_y = self._prepare_xy()
 
-        if not all_x and not all_y:
+        if xstat.count == 0 and ystat.count == 0:
             r.empty_message("No numeric data")
             return r.finish()
 
         x0, x1 = self._xlim if self._xlim else (
-            self._log_range(all_x) if log_x else utils.data_range(all_x, pad=0.02)
+            xstat.log_range() if log_x else xstat.data_range(pad=0.02)
         )
         y0, y1 = self._ylim if self._ylim else (
-            self._log_range(all_y) if log_y else utils.data_range(all_y, pad=0.08)
+            ystat.log_range() if log_y else ystat.data_range(pad=0.08)
         )
 
         # categorical x labels if we stored them
-        if self._categories and all(
-            abs(x - round(x)) < 1e-9 for x in all_x
-        ):
+        if self._categories and xstat.all_int:
             r.axes(
                 0,
                 max(len(self._categories), 1),
@@ -1969,6 +2035,9 @@ class Plot:
             r.empty_message("No data")
             return
         cols = max(len(row) for row in matrix)
+        if cols == 0:
+            r.empty_message("No data")
+            return
         row_labels = s.get("row_labels")
         col_labels = s.get("col_labels")
         show_values = bool(s.get("show_values", True))
@@ -2161,17 +2230,17 @@ class Plot:
                 r.legend(legend_items, kind="bar")
 
     def _raster_xy(self, r, palette: list[str]) -> None:
-        prepared, all_x, all_y, log_x, log_y = self._prepare_xy()
-        if not all_x and not all_y:
+        prepared, xstat, ystat, log_x, log_y = self._prepare_xy()
+        if xstat.count == 0 and ystat.count == 0:
             r.empty_message("No numeric data")
             return
         x0, x1 = self._xlim if self._xlim else (
-            self._log_range(all_x) if log_x else utils.data_range(all_x, pad=0.02)
+            xstat.log_range() if log_x else xstat.data_range(pad=0.02)
         )
         y0, y1 = self._ylim if self._ylim else (
-            self._log_range(all_y) if log_y else utils.data_range(all_y, pad=0.08)
+            ystat.log_range() if log_y else ystat.data_range(pad=0.08)
         )
-        if self._categories and all(abs(x - round(x)) < 1e-9 for x in all_x):
+        if self._categories and xstat.all_int:
             r.axes(0, max(len(self._categories), 1), y0, y1, grid=self._grid,
                    xlabels=self._categories, categorical_x=True,
                    rotate_x=self._xrot, log_y=log_y, datetime_x=self._x_is_datetime)
