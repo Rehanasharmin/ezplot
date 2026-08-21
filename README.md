@@ -219,6 +219,26 @@ p.save("custom_chart.png")
 
 ---
 
+## Diagnostics: warnings, errors, and recovery details
+
+`ezplot` is intentionally forgiving: it renders a visible fallback chart instead of crashing when practical. Every plot includes a structured diagnostic interpreter so applications can inspect recoveries, warnings, and rendering failures.
+
+```python
+p = ez.line([-2, 1, 4]).logy().style(colourr="coral")
+p.svg()
+
+for message in p.diagnostics():
+    print(message.code, message.severity.value, message.message)
+# ezplot.style.unknown_option warning Unknown style option(s) ignored
+# ezplot.axis.logy_fallback warning Log y-axis disabled because data contains zero or negative values
+
+print(p.diagnostic_report())       # formatted report for logs / support tickets
+print(p.has_errors())              # True for error or critical messages
+p.clear_diagnostics()
+```
+
+Each entry has a stable `code`, severity (`debug`, `info`, `warning`, `error`, or `critical`), UTC timestamp, context, and `to_dict()` for JSON logging. Factory/configuration events use the process-wide interpreter: `ez.diagnostics()`. To turn an integration exception into the same format, call `ez.interpret_exception(exc, phase="import")`.
+
 ## Customization (production-ready)
 
 ### Process-wide defaults

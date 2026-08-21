@@ -510,8 +510,10 @@ def _apply_style(p: Plot, style: dict) -> Plot:
     ]
     if unknown:
         import warnings
+        names = ', '.join(sorted(map(str, unknown)))
+        p._emit("warning", "ezplot.style.unknown_option", "Unknown style option(s) ignored", options=names)
         warnings.warn(
-            f"ezplot: unknown style option(s) ignored: {', '.join(sorted(map(str, unknown)))}",
+            f"ezplot: unknown style option(s) ignored: {names}",
             UserWarning,
             stacklevel=3,
         )

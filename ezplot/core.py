@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import utils
+from .diagnostics import Diagnostic, DiagnosticLog, Severity
 from .render import SVGRenderer
 from .style import get_theme, get_palette
 
@@ -147,6 +148,7 @@ class Plot:
         self._svg: str | None = None
         self._raster = None  # cached Canvas
         self._x_is_datetime = False
+        self._diagnostics = DiagnosticLog()
 
         # apply process-wide defaults (non-destructive)
         try:
@@ -173,8 +175,33 @@ class Plot:
             self._font_scale = max(1, int(d.get("font_scale", 1)))
             if d.get("bg"):
                 self._bg_override = d["bg"]
-        except Exception:
-            pass
+        except Exception as exc:
+            self._diagnostics.exception(exc, phase="defaults")
+
+    # ------------------------------------------------------------------ #
+    # diagnostics
+    # ------------------------------------------------------------------ #
+
+    def _emit(self, severity: Severity | str, code: str, message: str, **context: Any) -> Diagnostic:
+        """Record an internal event. Intended for extensions and factory helpers."""
+        return self._diagnostics.emit(severity, code, message, **context)
+
+    def diagnostics(self, minimum: Severity | str | None = None) -> list[Diagnostic]:
+        """Return structured warnings, errors, and informational render events."""
+        return self._diagnostics.entries(minimum)
+
+    def diagnostic_report(self, minimum: Severity | str | None = None) -> str:
+        """Return a readable diagnostics report suitable for a bug report."""
+        return self._diagnostics.report(minimum)
+
+    def clear_diagnostics(self) -> "Plot":
+        """Clear messages collected for this plot."""
+        self._diagnostics.clear()
+        return self
+
+    def has_errors(self) -> bool:
+        """Whether this plot has recorded an error or critical diagnostic."""
+        return self._diagnostics.has_errors()
 
     # ------------------------------------------------------------------ #
     # fluent style
@@ -1238,8 +1265,10 @@ class Plot:
 
         try:
             self._svg = self._render_unsafe()
+            self._emit(Severity.INFO, "ezplot.render.complete", "Chart rendered successfully", kind=self.kind)
         except Exception as exc:
             # never crash the host app — return a visible error chart
+            self._diagnostics.exception(exc, phase="render", kind=self.kind)
             r = SVGRenderer(self.width, self.height, theme=self._theme_name)
             r.begin()
             r.title(self._title or "ezplot")
@@ -1750,8 +1779,10 @@ class Plot:
 
         # log axes need strictly positive data; fall back to linear otherwise
         if log_x and xstat.has_nonpositive:
+            self._emit(Severity.WARNING, "ezplot.axis.logx_fallback", "Log x-axis disabled because data contains zero or negative values")
             log_x = False
         if log_y and ystat.has_nonpositive:
+            self._emit(Severity.WARNING, "ezplot.axis.logy_fallback", "Log y-axis disabled because data contains zero or negative values")
             log_y = False
         return prepared, xstat, ystat, log_x, log_y
 
@@ -1768,6 +1799,7 @@ class Plot:
         prepared, xstat, ystat, log_x, log_y = self._prepare_xy()
 
         if xstat.count == 0 and ystat.count == 0:
+            self._emit(Severity.WARNING, "ezplot.data.no_numeric", "No finite numeric points were available to render")
             r.empty_message("No numeric data")
             return r.finish()
 
@@ -1994,6 +2026,7 @@ class Plot:
             else:
                 self._raster_xy(r, palette)
         except Exception as exc:
+            self._diagnostics.exception(exc, phase="raster_render", kind=kind)
             r.empty_message(f"Render error: {exc}")
 
         # Apply draw callbacks after the primary chart is rendered
@@ -2001,8 +2034,8 @@ class Plot:
             for fn in self._draw_fn:
                 try:
                     fn(r)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._diagnostics.exception(exc, phase="draw_callback")
 
         r.xlabel(self._xlabel)
         r.ylabel(self._ylabel)

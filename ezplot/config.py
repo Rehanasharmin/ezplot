@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .diagnostics import Severity, get_diagnostics
+
 _DEFAULTS: dict[str, Any] = {
     "theme": None,          # None → style active theme
     "width": 720,
@@ -46,6 +48,13 @@ def defaults(**kwargs: Any) -> dict[str, Any]:
                 _DEFAULTS["width"] = int(v)
             elif k in ("h",):
                 _DEFAULTS["height"] = int(v)
+            else:
+                get_diagnostics().emit(
+                    Severity.WARNING,
+                    "ezplot.defaults.unknown_option",
+                    "Unknown default option ignored",
+                    option=str(k),
+                )
     return dict(_DEFAULTS)
 
 
