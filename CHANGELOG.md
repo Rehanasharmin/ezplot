@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## Hotfix
 
 **Performance / memory**
 
